@@ -2,7 +2,7 @@
 
 This manual provides step-by-step deployment instructions to build a two-tier Microsoft PKI for the [pkilab.win.us](http://pkilab.win.us) domain using your finalized hostnames and IPs. Every command is included in order with clear roles. No prior knowledge is assumed.
 
-  ## Environment
+## Environment
 
 * AD Domain (FQDN): [pkilab.win.us](http://pkilab.win.us)
 
@@ -57,6 +57,7 @@ Examples:
 ---
 
 ## 1\. DNS (no load balancer; DNS-based failover)
+
 Purpose: Provide stable HTTP and OCSP namespaces with fast failover.
 
 On a DNS server hosting [pkilab.win.us](http://pkilab.win.us), create:
@@ -80,6 +81,7 @@ On a DNS server hosting [pkilab.win.us](http://pkilab.win.us), create:
   * [ocsp.pkilab.win.us](http://ocsp1.pkilab.win.us) -> 10.20.1.221
 
 * Set TTL to 60–120 seconds for [pki.pkilab.win.us](http://pki.pkilab.win.us)
+
 * Set TTL to 60–120 seconds for [ocsp.pkilab.win.us](http://ocsp.pkilab.win.us).
 
 A single HTTP namespace for CDP/AIA/OCSP: Keeps URLs embedded in certificates stable for the PKI lifetime.
@@ -87,17 +89,18 @@ A single HTTP namespace for CDP/AIA/OCSP: Keeps URLs embedded in certificates st
 ---
 
 ## 2\. Web Servers (flweb1 and nyweb1) — DFS-backed pkidata
+
 Goal: Serve [http://pki.pkilab.win.us/pkidata/](http://pki.pkilab.win.us/pkidata/) with current CA certs and CRLs, using DFS namespace \\pkilab.win.us\\share\\PKIData as the single path in both sites.
 
 Prerequisites:
 
-* A DFS Namespace at \\pkilab.win.us\share with a folder target PKIData that points to backend folders in FL and NY. Ensure multi-site targets are healthy and replicate.
+* A DFS Namespace at \\pkilab.win.us\\share with a folder target PKIData that points to backend folders in FL and NY. Ensure multi-site targets are healthy and replicate.
 
 * NTFS & share permissions on the DFS target folders must grant Modify to:
 
-  * PKILAB\fliss1$
+  * PKILAB\\fliss1$
 
-  * PKILAB\nyiss1$
+  * PKILAB\\nyiss1$
 
   * Administrators Full Control
 
@@ -144,25 +147,109 @@ This ensures IIS can access the DFS share with the correct permissions.
 ```powershell
 Install-WindowsFeature Web-Server, Web-Scripting-Tools -IncludeManagementTools
 ```
+
 # Create IIS Virtual Directory to DFS path
+
+## 2.1 Certificate Services Web Enrollment Setup on Web Servers
+
+This section covers the installation and configuration of the Certificate Services Web Enrollment role (`/certsrv`) on the two web servers (flweb1 and nyweb1) to provide certificate enrollment services over HTTPS.
+
+### 2.1.1 Prerequisites
+
+* Both web servers must be joined to the domain.
+
+* IIS must be installed and configured (see section 2).
+
+* SSL certificates for the web servers must be available (see section 2.2.3).
+
+### 2.1.2 Create AD Security Group for Web Enrollment Access
+
+Create an Active Directory security group to restrict access to the `/certsrv` enrollment pages.
+
+```powershell
+New-ADGroup -Name "PKI Web Enrollment Users" -GroupScope Global -GroupCategory Security -Path "OU=Groups,DC=pkilab,DC=win,DC=us"
+```
+
+Add users who should have access to this group.
+
+### 2.1.3 Install Web Enrollment Role on Web Servers
+
+On each web server (flweb1 and nyweb1), install the Web Enrollment role:
+
+```powershell
+Install-WindowsFeature -Name Web-Enrollment -IncludeManagementTools
+```
+
+### 2.1.4 Configure SSL for Web Enrollment
+
+Bind the SSL certificate to the Default Web Site in IIS to secure `/certsrv`:
+
+1. Open IIS Manager.
+
+2. Select Default Web Site.
+
+3. Click "Bindings..." on the right.
+
+4. Add or edit the HTTPS binding to use the SSL certificate issued to the web server.
+
+### 2.1.5 Restrict Access to `/certsrv`
+
+Configure IIS to restrict access to the `/certsrv` virtual directory to members of the "PKI Web Enrollment Users" group:
+
+1. In IIS Manager, navigate to the `/certsrv` virtual directory.
+
+2. Open "Authorization Rules".
+
+3. Remove the default "Allow All Users" rule.
+
+4. Add an "Allow" rule for the "PKI Web Enrollment Users" group.
+
+### 2.1.6 Configure HTTP to HTTPS Redirection
+
+To ensure secure access, configure HTTP to HTTPS redirection for the Default Web Site:
+
+1. In IIS Manager, select Default Web Site.
+
+2. Open "HTTP Redirect".
+
+3. Enable redirect and specify the destination as `https://<webserver_fqdn>/`.
+
+4. Check "Only redirect requests to content in this directory".
+
+### 2.1.7 Testing
+
+Verify that the `/certsrv` page is accessible over HTTPS and requires authentication:
+
+* Open a browser and navigate to `https://flweb1.pkilab.win.us/certsrv` and `https://nyweb1.pkilab.win.us/certsrv`.
+
+* Confirm the SSL certificate is valid.
+
+* Confirm that only users in the "PKI Web Enrollment Users" group can access the enrollment pages.
+
+---
 
 ```powershell
 $vDirProperties = @{ Site = 'Default Web Site'; Name = 'pkidata'; PhysicalPath = '\\pkilab.win.us\share\PKIData' }\
 New-WebVirtualDirectory @vDirProperties
 ```
+
 # Enable directory browsing and allow double-escaping
 
 ```powershell
 Set-WebConfigurationProperty -Filter /system.webServer/directoryBrowse -Name enabled -Value true−PSPath"IIS:\Sites$(vDirProperties.Site)$($vDirProperties.Name)"
 Set-WebConfigurationProperty -Filter /system.webServer/security/requestFiltering -Name allowDoubleEscaping -Value true−PSPath"IIS:\Sites$(vDirProperties.Site)"
 ```
+
 # Add MIME types for CRL/CRT and set basic caching headers
+
 # should check to see if this exists if it does ignore this
+
 ```powershell
 Add-WebConfigurationProperty -pspath 'IIS:' -filter "system.webServer/staticContent" -name "." -value @{fileExtension='.crl'; mimeType='application/pkix-crl'}\
 Add-WebConfigurationProperty -pspath 'IIS:' -filter "system.webServer/staticContent" -name "." -value @{fileExtension='.crt'; mimeType='application/x-x509-ca-cert'}\
 Add-WebConfigurationProperty -pspath 'IIS:' -filter "system.webServer/staticContent" -name "." -value @{fileExtension='.cer'; mimeType='application/x-x509-ca-cert'}
 ```
+
 # Optional: set cache-control for pkidata
 
 ```powershell
@@ -170,12 +257,17 @@ Set-WebConfiguration -Filter /system.webServer/httpProtocol/customHeaders -PSPat
 ```
 
 Verification:
-- Browse http://pki.pkilab.win.us/pkidata/ (should list directory).
-- Also test server-specific URLs:
-  - http://flweb1.pkilab.win.us/pkidata/
-  - http://nyweb1.pkilab.win.us/pkidata/
+
+* Browse [http://pki.pkilab.win.us/pkidata/](http://pki.pkilab.win.us/pkidata/) (should list directory).
+
+* Also test server-specific URLs:
+
+  * [http://flweb1.pkilab.win.us/pkidata/](http://flweb1.pkilab.win.us/pkidata/)
+
+  * [http://nyweb1.pkilab.win.us/pkidata/](http://nyweb1.pkilab.win.us/pkidata/)
 
 Optional hardening for production:
+
 ```powershell
 # Disable directory browsing (if you choose to lock it down)
 Set-WebConfigurationProperty -Filter /system.webServer/directoryBrowse -Name enabled -Value $false -PSPath "IIS:\Sites\$($vDirProperties.Site)\$($vDirProperties.Name)"
@@ -184,7 +276,8 @@ Set-WebConfigurationProperty -Filter /system.webServer/directoryBrowse -Name ena
 ---
 
 ## 3\. Offline Root CA — pkirootca (kept offline)
-  Purpose: Establish the trust anchor. Configure AIA/CDP so clients know where to fetch the root CA cert and CRL. Manually transfer files to DFS and publish to AD.
+
+Purpose: Establish the trust anchor. Configure AIA/CDP so clients know where to fetch the root CA cert and CRL. Manually transfer files to DFS and publish to AD.
 
 On pkirootca (standalone, NOT domain-joined):
 
@@ -254,14 +347,15 @@ Manual transfer (Root is offline):
 
 1. Copy from pkirootca (CertEnroll) to removable media:
 
- * PKILab Root CA.crt
- * PKILab Root CA.crl
+* PKILab Root CA.crt
 
-2. Place into DFS path using any domain-joined machine:
+* PKILab Root CA.crl
 
- * \\pkilab.win.us\share\PKIData\
+1. Place into DFS path using any domain-joined machine:
 
-3. From a domain-joined admin machine, publish to AD:
+* \\pkilab.win.us\\share\\PKIData\\
+
+1. From a domain-joined admin machine, publish to AD:
 
 ```powershell
 certutil -dspublish -f "\\pkilab.win.us\share\PKIData\PKILab Root CA.crt" rootca
@@ -276,6 +370,7 @@ Power off pkirootca when not in use.
 ---
 
 ## 4\. Issuing CAs — fliss1 (FL) and nyiss1 (NY)
+
 Purpose: Two enterprise issuing CAs for HA. Each publishes CRLs locally; issued certs embed a single HTTP CDP/AIA URL pointing to [pki.pkilab.win.us](http://pki.pkilab.win.us).
 
 CA Common Names:
@@ -385,6 +480,7 @@ certutil -dspublish -f "$($cer.FullName)" SubCA
 ```
 
 ### 4.5 Ensure that all required files for PKIView are copied to the DFS pkidata folder
+
 * C:\\Windows\\System32\\CertSrv\\CertEnroll\\PKILab Issuing CA - FL.crl
 
 * C:\\Windows\\System32\\CertSrv\\CertEnroll\\PKILab Issuing CA - FL+.crl
@@ -492,6 +588,7 @@ certutil -dspublish -f "$($cer.FullName)" SubCA
 ```
 
 ### 4.5 Ensure that all required files for PKIView are copied to the DFS pkidata folder
+
 * C:\\Windows\\System32\\CertSrv\\CertEnroll\\PKILab Issuing CA - NY.crl
 
 * C:\\Windows\\System32\\CertSrv\\CertEnroll\\PKILab Issuing CA - NY+.crl
@@ -499,22 +596,24 @@ certutil -dspublish -f "$($cer.FullName)" SubCA
 * C:\\pkidata\\pkilab_issuing_NY.req.crt
 
 ## Enable required certificate templates on BOTH issuing CAs (see Section 6).
-Duplicate the existing OCSP Template
-"PKILab OCSP Response Signing"
-Compatibility
-  Certificate Authority = 2016
-  Certificate recipient = Win10/Server 2016
-Request Handling
-  Purpose = Signature
-  Allow private key to be exported - "leave unchecked"
-Cryptography
-  Minimum Key size = 4096
-Security
-  Add both OCSP server computer objects with Readm Enroll and AutoEnroll
+
+Duplicate the existing OCSP Template\
+"PKILab OCSP Response Signing"\
+Compatibility\
+Certificate Authority = 2016\
+Certificate recipient = Win10/Server 2016\
+Request Handling\
+Purpose = Signature\
+Allow private key to be exported - "leave unchecked"\
+Cryptography\
+Minimum Key size = 4096\
+Security\
+Add both OCSP server computer objects with Readm Enroll and AutoEnroll
 
 ---
 
 ## 5\. OCSP Responders — flocsp and nyocsp1 (single URL)
+
 Purpose: Real-time revocation with responders in both sites. Use single OCSP URL with DNS failover for HA.
 
 Install role on each OCSP server:
@@ -527,13 +626,13 @@ On both Issuing CAs, ensure AIA includes the single OCSP URL:
 
 * ocsp:[http://ocsp.pkilab.win.us/ocsp](http://ocsp.pkilab.win.us/ocsp) (checked to include in AIA of issued certs) and restart each CA service.
 
-Configure Online Responder Management on flocsp and nyocsp1:
-For FLOCSP1
-Base CRLs   http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20FL.crl
-Delta CRLs  http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20FL+.crl
-For NYOCSP1
-Base CRLs   http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20NY.crl
-Delta CRLs  http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20NY+.crl
+Configure Online Responder Management on flocsp and nyocsp1:\
+For FLOCSP1\
+Base CRLs   [http://pki.pkilab.win.us/pkidata/PKILab Issuing CA - FL.crl](http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20FL.crl)\
+Delta CRLs  [http://pki.pkilab.win.us/pkidata/PKILab Issuing CA - FL+.crl](http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20FL+.crl)\
+For NYOCSP1\
+Base CRLs   [http://pki.pkilab.win.us/pkidata/PKILab Issuing CA - NY.crl](http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20NY.crl)\
+Delta CRLs  [http://pki.pkilab.win.us/pkidata/PKILab Issuing CA - NY+.crl](http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20NY+.crl)
 
 * Create a Revocation Configuration per Issuing CA (two configs per server: FL and NY CA).
 
@@ -585,6 +684,7 @@ Duplicate the existing OCSP Template "PKILab OCSP Response Signing" with these s
 ---
 
 ## 8\. Validation
+
 HTTP checks (should return files):
 
 * [http://pki.pkilab.win.us/pkidata/PKILab Root CA.crt](http://pki.pkilab.win.us/pkidata/PKILab%20Root%20CA.crt)
@@ -610,9 +710,10 @@ certutil -verify -urlfetch '<path-to-an-end-entity-cert.cer>'
 ---
 
 ## 9\.  Certificate Templates, Autoenrollment, and Horizon VDI (Omnissa)
+
 Goal: Define and publish the minimum certificate templates, enable autoenrollment, and support Horizon VDI user certificates.
 
-6.1 Create AD groups for template security
+6.1 Create AD groups for template security\
 Create these global security groups (in AD Users and Computers):
 
 * PKI Web Servers — add web servers (flweb1$, nyweb1$) or any server that needs a Web Server cert.
@@ -904,13 +1005,13 @@ This appendix provides concrete examples for backend DFS targets and recommended
 
 Example DFS Namespace and targets
 
-* DFS Namespace: \\pkilab.win.us\share
+* DFS Namespace: \\pkilab.win.us\\share
 
 * Folder in namespace: PKIData
 
-* Target 1 (Florida): \\flfilesrv\pki\PKIData
+* Target 1 (Florida): \\flfilesrv\\pki\\PKIData
 
-* Target 2 (New York): \\nyfilesrv\pki\PKIData
+* Target 2 (New York): \\nyfilesrv\\pki\\PKIData
 
 DFS Namespace settings (recommended)
 
@@ -946,7 +1047,7 @@ Share permissions (on each backend target share)
 
   * Option A (simplest): Authenticated Users: Read
 
-  * Option B (tightest): PKILAB\flweb1$, PKILAB\nyweb1$: Read
+  * Option B (tightest): PKILAB\\flweb1$, PKILAB\\nyweb1$: Read
 
 NTFS permissions (on the PKIData folder root, inherit to children)
 
@@ -958,15 +1059,15 @@ NTFS permissions (on the PKIData folder root, inherit to children)
 
 * PKILAB\\nyiss1$: Modify, This folder, subfolders and files
 
-* Web servers (if using tight ACLs): PKILAB\flweb1$, PKILAB\nyweb1$: Read & execute, This folder, subfolders and files
+* Web servers (if using tight ACLs): PKILAB\\flweb1$, PKILAB\\nyweb1$: Read & execute, This folder, subfolders and files
 
 * (Optional) Deny write for non-PKI admins to protect integrity of published files.
 
 Operational notes
 
-* CAs publish CRLs/certs locally; copy to \\pkilab.win.us\share\PKIData (DFS namespace) or directly into backend target for their site; DFSR replicates across sites.
+* CAs publish CRLs/certs locally; copy to \\pkilab.win.us\\share\\PKIData (DFS namespace) or directly into backend target for their site; DFSR replicates across sites.
 
-* IIS virtual directory on flweb1/nyweb1 points to the DFS namespace path (\\pkilab.win.us\share\PKIData) so both servers always serve the current content.
+* IIS virtual directory on flweb1/nyweb1 points to the DFS namespace path (\\pkilab.win.us\\share\\PKIData) so both servers always serve the current content.
 
 ---
 
@@ -1098,7 +1199,7 @@ This clarifies exactly how to configure CA policy paths so CAs publish to the DF
 
 Key rules
 
-* Publish targets (where the CA writes files): use UNC path \\pkilab.win.us\share\PKIData and optional local CertEnroll folder.
+* Publish targets (where the CA writes files): use UNC path \\pkilab.win.us\\share\\PKIData and optional local CertEnroll folder.
 
 * Embedded URLs in certificates: use only HTTP for AIA/CDP and the single OCSP URL. Do NOT embed UNC paths.
 

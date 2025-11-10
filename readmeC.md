@@ -2,7 +2,7 @@
 
 This manual provides step-by-step deployment instructions to build a two-tier Microsoft PKI for the [pkilab.win.us](http://pkilab.win.us) domain using your finalized hostnames and IPs. Every command is included in order with clear roles. No prior knowledge is assumed.
 
-  ## Environment
+Environment
 
 * AD Domain (FQDN): [pkilab.win.us](http://pkilab.win.us)
 
@@ -40,7 +40,7 @@ This manual provides step-by-step deployment instructions to build a two-tier Mi
 
 * DFS path for pkidata: \\pkilab.win.us\\share\\PKIData
 
-## ADCS variables in file paths
+ADCS variables in file paths
 
 * %3 = CA Common Name
 
@@ -56,8 +56,8 @@ Examples:
 
 ---
 
-## 1\. DNS (no load balancer; DNS-based failover)
-Purpose: Provide stable HTTP and OCSP namespaces with fast failover.
+1. DNS (no load balancer; DNS-based failover)\
+  Purpose: Provide stable HTTP and OCSP namespaces with fast failover.
 
 On a DNS server hosting [pkilab.win.us](http://pkilab.win.us), create:
 
@@ -71,44 +71,47 @@ On a DNS server hosting [pkilab.win.us](http://pkilab.win.us), create:
 
   * [nyocsp1.pkilab.win.us](http://nyocsp1.pkilab.win.us) -> 10.20.1.221
 
-  * [pki.pkilab.win.us](http://pki.pkilab.win.us) -> 10.10.1.241
+* CNAMES:
 
-  * [pki.pkilab.win.us](http://pki.pkilab.win.us) -> 10.20.1.241
+  * [pki.pkilab.win.us](http://pki.pkilab.win.us) -> [flweb1.pkilab.win.us](http://flweb1.pkilab.win.us) (steady state)
 
-  * [ocsp.pkilab.win.us](http://ocsp.pkilab.win.us) -> 10.10.1.221
+  * [ocsp.pkilab.win.us](http://ocsp.pkilab.win.us) -> [flocsp.pkilab.win.us](http://flocsp.pkilab.win.us) (steady state)
 
-  * [ocsp.pkilab.win.us](http://ocsp1.pkilab.win.us) -> 10.20.1.221
+* Set TTL to 60–120 seconds for [pki.pkilab.win.us](http://pki.pkilab.win.us) and [ocsp.pkilab.win.us](http://ocsp.pkilab.win.us).
 
-* Set TTL to 60–120 seconds for [pki.pkilab.win.us](http://pki.pkilab.win.us)
-* Set TTL to 60–120 seconds for [ocsp.pkilab.win.us](http://ocsp.pkilab.win.us).
+Failover runbook:
 
-A single HTTP namespace for CDP/AIA/OCSP: Keeps URLs embedded in certificates stable for the PKI lifetime.
+* Web down in FL: flip CNAME [pki.pkilab.win.us](http://pki.pkilab.win.us) -> [nyweb1.pkilab.win.us](http://nyweb1.pkilab.win.us).
+
+* OCSP down in FL: flip CNAME [ocsp.pkilab.win.us](http://ocsp.pkilab.win.us) -> [nyocsp1.pkilab.win.us](http://nyocsp1.pkilab.win.us).
+
+Why single HTTP namespace for CDP/AIA/OCSP: Keeps URLs embedded in certificates stable for the PKI lifetime; only DNS changes during failover.
 
 ---
 
-## 2\. Web Servers (flweb1 and nyweb1) — DFS-backed pkidata
-Goal: Serve [http://pki.pkilab.win.us/pkidata/](http://pki.pkilab.win.us/pkidata/) with current CA certs and CRLs, using DFS namespace \\pkilab.win.us\\share\\PKIData as the single path in both sites.
+1. Web Servers (flweb1 and nyweb1) — DFS-backed pkidata\
+  Goal: Serve [http://pki.pkilab.win.us/pkidata/](http://pki.pkilab.win.us/pkidata/) with current CA certs and CRLs, using DFS namespace \\pkilab.win.us\\share\\PKIData as the single path in both sites.
 
 Prerequisites:
 
-* A DFS Namespace at \\pkilab.win.us\share with a folder target PKIData that points to backend folders in FL and NY. Ensure multi-site targets are healthy and replicate.
+* A DFS Namespace at \\pkilab.win.us\\share with a folder target PKIData that points to backend folders in FL and NY. Ensure multi-site targets are healthy and replicate.
 
 * NTFS & share permissions on the DFS target folders must grant Modify to:
 
-  * PKILAB\fliss1$
+  * PKILAB\\fliss1$
 
-  * PKILAB\nyiss1$
+  * PKILAB\\nyiss1$
 
   * Administrators Full Control
 
 Perform on flweb1 (run PowerShell as Administrator), then repeat identical steps on nyweb1:
 
 ```powershell
-### Install IIS
+# Install IIS
 
 ---
 
-#### PKIWebSvc Account and Permissions Setup
+1.5) PKIWebSvc Account and Permissions Setup
 
 Before configuring the Web Servers to serve the DFS-backed PKIData share, create and configure the PKIWebSvc service account and set appropriate permissions.
 
@@ -118,20 +121,19 @@ On a domain-joined admin machine, run:
 $pwd = Read-Host -Prompt 'Enter password for PKIWebSvc' -AsSecureString
 New-ADUser -Name 'PKIWebSvc' -SamAccountName 'PKIWebSvc' -AccountPassword $pwd -Enabled $true -PasswordNeverExpires $false -Path 'CN=Users,DC=pkilab,DC=win,DC=us' -PassThru
 
-# Add PKIWebSvc to PKI Web Servers group
-#(create group if not existing)
+# Add PKIWebSvc to PKI Web Servers group (create group if not existing)
 Add-ADGroupMember -Identity 'PKI Web Servers' -Members 'PKIWebSvc'
 
 # Grant NTFS and Share permissions on DFS targets (run on each file server hosting DFS targets)
-Grant-SmbShareAccess -Name 'PKIData' -AccountName 'PKILAB\PKIWebSvc' -AccessRight Change -Force
-icacls 'C:\PKIData' /grant "PKILAB\PKIWebSvc:(OI)(CI)M" /T
+Grant-SmbShareAccess -Name 'PKIData' -AccountName 'PKILAB\\PKIWebSvc' -AccessRight Change -Force
+icacls 'D:\PKIData' /grant "PKILAB\\PKIWebSvc:(OI)(CI)M" /T
 ```
 
-#### On each IIS web server (flweb1, nyweb1), configure the IIS Application Pool to run as PKIWebSvc:
+On each IIS web server (flweb1, nyweb1), configure the IIS Application Pool to run as PKIWebSvc:
 
 ```powershell
 Import-Module WebAdministration
-Set-ItemProperty IIS:\AppPools\DefaultAppPool -Name processModel -Value @{userName='PKILAB\PKIWebSvc';password='<password>'}
+Set-ItemProperty IIS:\AppPools\DefaultAppPool -Name processModel -Value @{userName='PKILAB\\PKIWebSvc';password='<password>'}
 Restart-WebAppPool DefaultAppPool
 ```
 
@@ -144,38 +146,47 @@ This ensures IIS can access the DFS share with the correct permissions.
 ```powershell
 Install-WindowsFeature Web-Server, Web-Scripting-Tools -IncludeManagementTools
 ```
+
 # Create IIS Virtual Directory to DFS path
 
 ```powershell
-$vDirProperties = @{ Site = 'Default Web Site'; Name = 'pkidata'; PhysicalPath = '\\pkilab.win.us\share\PKIData' }\
+$vDirProperties = @{ Site = 'Default Web Site'; Name = 'pkidata'; PhysicalPath = '\\pkilab.win.us\\share\\PKIData' }\
 New-WebVirtualDirectory @vDirProperties
 ```
+
 # Enable directory browsing and allow double-escaping
 
 ```powershell
 Set-WebConfigurationProperty -Filter /system.webServer/directoryBrowse -Name enabled -Value true−PSPath"IIS:\Sites$(vDirProperties.Site)$($vDirProperties.Name)"
 Set-WebConfigurationProperty -Filter /system.webServer/security/requestFiltering -Name allowDoubleEscaping -Value true−PSPath"IIS:\Sites$(vDirProperties.Site)"
 ```
+
 # Add MIME types for CRL/CRT and set basic caching headers
-# should check to see if this exists if it does ignore this
+
 ```powershell
 Add-WebConfigurationProperty -pspath 'IIS:' -filter "system.webServer/staticContent" -name "." -value @{fileExtension='.crl'; mimeType='application/pkix-crl'}\
 Add-WebConfigurationProperty -pspath 'IIS:' -filter "system.webServer/staticContent" -name "." -value @{fileExtension='.crt'; mimeType='application/x-x509-ca-cert'}\
 Add-WebConfigurationProperty -pspath 'IIS:' -filter "system.webServer/staticContent" -name "." -value @{fileExtension='.cer'; mimeType='application/x-x509-ca-cert'}
 ```
+
 # Optional: set cache-control for pkidata
 
 ```powershell
-Set-WebConfiguration -Filter /system.webServer/httpProtocol/customHeaders -PSPath "IIS:\Sites$($vDirProperties.Site)" -Value @{name='Cache-Control';value='public, max-age=604800'}
+Set-WebConfiguration -Filter /system.webServer/httpProtocol/customHeaders -PSPath "IIS:\\Sites$($vDirProperties.Site)" -Value @{name='Cache-Control';value='public, max-age=604800'}
 ```
 
 Verification:
-- Browse http://pki.pkilab.win.us/pkidata/ (should list directory).
-- Also test server-specific URLs:
-  - http://flweb1.pkilab.win.us/pkidata/
-  - http://nyweb1.pkilab.win.us/pkidata/
+
+* Browse [http://pki.pkilab.win.us/pkidata/](http://pki.pkilab.win.us/pkidata/) (should list directory).
+
+* Also test server-specific URLs:
+
+  * [http://flweb1.pkilab.win.us/pkidata/](http://flweb1.pkilab.win.us/pkidata/)
+
+  * [http://nyweb1.pkilab.win.us/pkidata/](http://nyweb1.pkilab.win.us/pkidata/)
 
 Optional hardening for production:
+
 ```powershell
 # Disable directory browsing (if you choose to lock it down)
 Set-WebConfigurationProperty -Filter /system.webServer/directoryBrowse -Name enabled -Value $false -PSPath "IIS:\Sites\$($vDirProperties.Site)\$($vDirProperties.Name)"
@@ -183,7 +194,7 @@ Set-WebConfigurationProperty -Filter /system.webServer/directoryBrowse -Name ena
 
 ---
 
-## 3\. Offline Root CA — pkirootca (kept offline)
+1. Offline Root CA — pkirootca (kept offline)\
   Purpose: Establish the trust anchor. Configure AIA/CDP so clients know where to fetch the root CA cert and CRL. Manually transfer files to DFS and publish to AD.
 
 On pkirootca (standalone, NOT domain-joined):
@@ -227,17 +238,15 @@ certutil -setreg CA\CRLOverlapPeriodUnits 7
 certutil -setreg CA\CRLOverlapPeriod Days
 certutil -setreg CA\AuditFilter 127
 
-# CDP: clear and set (local + HTTP + DFS UNC)
+# CDP: clear and set (local + HTTP)
 $crllist = Get-CACrlDistributionPoint
 foreach ($crl in $crllist) { Remove-CACrlDistributionPoint $crl.Uri -Force }
-Add-CACRLDistributionPoint -Uri '\\pkilab.win.us\share\PKIData\%3%8.crl' -PublishToServer -PublishDeltaToServer -Force
 Add-CACRLDistributionPoint -Uri 'C:\Windows\System32\CertSrv\CertEnroll\%3%8.crl' -PublishToServer -PublishDeltaToServer -Force
 Add-CACRLDistributionPoint -Uri 'http://pki.pkilab.win.us/pkidata/%3%8.crl' -AddToCertificateCDP -AddToFreshestCrl -Force
 
-# AIA: clear LDAP/HTTP/FILE then set (local + HTTP + DFS UNC)
+# AIA: clear LDAP/HTTP/FILE then set (local + HTTP)
 Get-CAAuthorityInformationAccess | Where-Object { $_.Uri -like '*ldap*' -or $_.Uri -like '*http*' -or $_.Uri -like '*file*' } | Remove-CAAuthorityInformationAccess -Force
-certutil -setreg CA\CACertPublicationURLs '1:C:\Windows\System32\CertSrv\CertEnroll\%3%4.crt
-2:\\pkilab.win.us\share\PKIData\%3%4.crt'
+certutil -setreg CA\CACertPublicationURLs '1:C:\Windows\System32\CertSrv\CertEnroll\%3%4.crt'
 Add-CAAuthorityInformationAccess -AddToCertificateAia 'http://pki.pkilab.win.us/pkidata/%3%4.crt' -Force
 
 # Publish initial CRL
@@ -254,14 +263,15 @@ Manual transfer (Root is offline):
 
 1. Copy from pkirootca (CertEnroll) to removable media:
 
- * PKILab Root CA.crt
- * PKILab Root CA.crl
+* PKILab Root CA.crt
 
-2. Place into DFS path using any domain-joined machine:
+* PKILab Root CA.crl
 
- * \\pkilab.win.us\share\PKIData\
+1. Place into DFS path using any domain-joined machine:
 
-3. From a domain-joined admin machine, publish to AD:
+* \\pkilab.win.us\\share\\PKIData\\
+
+1. From a domain-joined admin machine, publish to AD:
 
 ```powershell
 certutil -dspublish -f "\\pkilab.win.us\share\PKIData\PKILab Root CA.crt" rootca
@@ -275,8 +285,8 @@ Power off pkirootca when not in use.
 
 ---
 
-## 4\. Issuing CAs — fliss1 (FL) and nyiss1 (NY)
-Purpose: Two enterprise issuing CAs for HA. Each publishes CRLs locally; issued certs embed a single HTTP CDP/AIA URL pointing to [pki.pkilab.win.us](http://pki.pkilab.win.us).
+1. Issuing CAs — fliss1 (FL) and nyiss1 (NY)\
+  Purpose: Two enterprise issuing CAs for HA. Each publishes CRLs locally; issued certs embed a single HTTP CDP/AIA URL pointing to [pki.pkilab.win.us](http://pki.pkilab.win.us).
 
 CA Common Names:
 
@@ -284,7 +294,7 @@ CA Common Names:
 
 * NY: PKILab Issuing CA - NY
 
-### 4.1 Install Issuing CA on fliss1
+3.1 Install Issuing CA on fliss1
 
 ```powershell
 # CAPolicy.inf (prevents default templates auto-load)
@@ -311,29 +321,17 @@ $vCaIssProperties = @{
 Install-AdcsCertificationAuthority @vCaIssProperties -Force -OverwriteExistingKey
 ```
 
-### 4.2 Enroll/issue SubCA cert from the Root CA
+Enroll/issue SubCA cert from the Root CA:
 
-* Copy `C:\pkidata\pkilab_issuing_fl.req` to pkirootca (power on temporarily).
+* Copy C:\\pkidata\\pkilab_issuing_fl.req to pkirootca (power on temporarily).
 
-* On pkirootca, submit, approve, and download the issuing CA certificate using the following commands:
+* On pkirootca, issue pkilab_issuing_fl.cer to the SubCA request.
 
-```powershell
-# Submit the request
-certreq -submit C:\pkidata\pkilab_issuing_fl.req C:\pkidata\pkilab_issuing_fl.cer
-
-# Approve the request (requires CA admin privileges)
-certutil -getrequests
-certutil -approve <RequestID>
-
-# Download the issued certificate
-certutil -retrieve <RequestID> C:\pkidata\pkilab_issuing_fl.cer
-```
-
-* On fliss1, open Certification Authority console, right-click the stopped CA, choose "Install new key/certificate" and select the issued `.cer`.
+* On fliss1, open Certification Authority console, right-click the stopped CA, choose "Install new key/certificate" and select the issued .cer.
 
 * Start the Certification Authority service.
 
-### 4.3 Configure validity, CDP, AIA, and OCSP on fliss1
+Configure validity, CDP, AIA, and OCSP on fliss1:
 
 ```powershell
 # Validity and CRL schedule
@@ -350,33 +348,25 @@ certutil -setreg CA\AuditFilter 127
 $crllist = Get-CACrlDistributionPoint
 foreach ($crl in $crllist) { Remove-CACrlDistributionPoint $crl.Uri -Force }
 
-# CDP publish locations (UNC and optional local)
-Add-CACRLDistributionPoint -Uri '\\pkilab.win.us\share\PKIData\%3%8.crl' -PublishToServer -PublishDeltaToServer -Force
+# 1) Local publish
 Add-CACRLDistributionPoint -Uri 'C:\Windows\System32\CertSrv\CertEnroll\%3%8.crl' -PublishToServer -PublishDeltaToServer -Force
 
-# CDP embedded in issued certs (HTTP only)
+# 2) Single HTTP namespace for clients (embed in issued certs)
 Add-CACRLDistributionPoint -Uri 'http://pki.pkilab.win.us/pkidata/%3%8.crl' -AddToCertificateCDP -AddToFreshestCrl -Force
 
-# AIA publish locations (UNC and optional local)
-certutil -setreg CA\CACertPublicationURLs "1:C:\Windows\System32\CertSrv\CertEnroll\%3%4.crt\n2:\\pkilab.win.us\share\PKIData\%3%4.crt"
-
-# AIA embedded in issued certs (HTTP only)
+# AIA: local + HTTP (embed HTTP in issued certs)
 Get-CAAuthorityInformationAccess | Where-Object { $_.Uri -like '*ldap*' -or $_.Uri -like '*http*' -or $_.Uri -like '*file*' } | Remove-CAAuthorityInformationAccess -Force
+certutil -setreg CA\CACertPublicationURLs '1:C:\Windows\System32\CertSrv\CertEnroll\%3%4.crt'
 Add-CAAuthorityInformationAccess -AddToCertificateAia 'http://pki.pkilab.win.us/pkidata/%3%4.crt' -Force
 
-# OCSP URL (embedded) — use Certification Authority GUI (no registry edits)
-# certsrv.msc -> [CA] -> Properties -> Extensions tab
-#   - Select: Authority Information Access (AIA)
-#   - Click Add... -> Location: ocsp:http://ocsp.pkilab.win.us/ocsp
-#   - Check: Include in the AIA extension of issued certificates
-#   - Ensure the HTTP AIA entry is also checked
-# Apply, then restart service and publish a CRL.
+# OCSP URL (single, DNS HA) — Scripted addition to AIA (alternative to GUI)
+
 Restart-Service certsvc
 Start-Sleep -Seconds 2
 certutil -crl
 ```
 
-### 4.4 Publish Issuing CA - FL to AD (from fliss1 or any domain-joined admin machine)
+Publish Issuing CA - FL to AD (from fliss1 or any domain-joined admin machine):
 
 ```powershell
 $cer = Get-ChildItem 'C:\Windows\System32\CertSrv\CertEnroll' -Filter '*PKILab Issuing CA - FL*.crt' | Select-Object -First 1
@@ -384,17 +374,15 @@ certutil -dspublish -f "$($cer.FullName)" NTAuthCA
 certutil -dspublish -f "$($cer.FullName)" SubCA
 ```
 
-### 4.5 Ensure that all required files for PKIView are copied to the DFS pkidata folder
-* C:\\Windows\\System32\\CertSrv\\CertEnroll\\PKILab Issuing CA - FL.crl
+Ensure that both files are copied to the DFS pkidata folder\
+C:\\Windows\\System32\\CertSrv\\CertEnroll\\PKILab Issuing CA - FL.crl\
+C:\\Windows\\System32\\CertSrv\\CertEnroll\\PKILab Issuing CA - FL+.crl\
+C:\\pkidata\\pkilab_issuing_fl.req.crt
 
-* C:\\Windows\\System32\\CertSrv\\CertEnroll\\PKILab Issuing CA - FL+.crl
-
-* C:\\pkidata\\pkilab_issuing_fl.req.crt
-
-### 4.6 Repeat steps 4.1 to 4.5 for nyiss1 with NY names
+3.2 Install Issuing CA on nyiss1 (repeat with NY names)
 
 ```powershell
-# CAPolicy.inf (prevents default templates auto-load)
+# CAPolicy.inf
 Set-Content  C:\Windows\CAPolicy.inf '[Version]'
 Add-Content C:\Windows\CAPolicy.inf 'Signature="$Windows NT$"'
 Add-Content C:\Windows\CAPolicy.inf '[InternalPolicy]'
@@ -402,12 +390,11 @@ Add-Content C:\Windows\CAPolicy.inf 'URL=http://pki.pkilab.win.us/pkidata/cps.ht
 Add-Content C:\Windows\CAPolicy.inf '[Certsrv_Server]'
 Add-Content C:\Windows\CAPolicy.inf 'LoadDefaultTemplates=0'
 
-# Role and request
 Add-WindowsFeature ADCS-Cert-Authority -IncludeManagementTools
 
 $vCaIssProperties = @{
   CACommonName    = 'PKILab Issuing CA - NY'
-  CADistinguishedNameSuffix = 'O=PKILab,L=Fort Lauderdale,S=Florida,C=US'
+  CADistinguishedNameSuffix = 'O=PKILab,L=New York,S=New York,C=US'
   CAType    = 'EnterpriseSubordinateCA'
   CryptoProviderName    = 'RSA#Microsoft Software Key Storage Provider'
   HashAlgorithmName    = 'SHA256'
@@ -418,32 +405,11 @@ $vCaIssProperties = @{
 Install-AdcsCertificationAuthority @vCaIssProperties -Force -OverwriteExistingKey
 ```
 
-### 4.2 Enroll/issue SubCA cert from the Root CA
+* Copy C:\\pkidata\\pkilab_issuing_ny.req to pkirootca, issue pkilab_issuing_ny.cer, complete installation on nyiss1, then start the service.
 
-* Copy `C:\pkidata\pkilab_issuing_ny.req` to pkirootca (power on temporarily).
-
-* On pkirootca, submit, approve, and download the issuing CA certificate using the following commands:
+Configure CDP/AIA/OCSP on nyiss1 (same as FL):
 
 ```powershell
-# Submit the request
-certreq -submit C:\pkidata\pkilab_issuing_ny.req C:\pkidata\pkilab_issuing_ny.cer
-
-# Approve the request (requires CA admin privileges)
-certutil -getrequests
-certutil -approve <RequestID>
-
-# Download the issued certificate
-certutil -retrieve <RequestID> C:\pkidata\pkilab_issuing_ny.cer
-```
-
-* On nyiss1, open Certification Authority console, right-click the stopped CA, choose "Install new key/certificate" and select the issued `.cer`.
-
-* Start the Certification Authority service.
-
-### 4.3 Configure validity, CDP, AIA, and OCSP on fliss1
-
-```powershell
-# Validity and CRL schedule
 certutil -setreg CA\ValidityPeriodUnits 1
 certutil -setreg CA\ValidityPeriod Years
 certutil -setreg CA\CRLPeriodUnits 52
@@ -453,37 +419,22 @@ certutil -setreg CA\CRLOverlapPeriodUnits 3
 certutil -setreg CA\CRLOverlapPeriod Days
 certutil -setreg CA\AuditFilter 127
 
-# Clear existing CDPs
 $crllist = Get-CACrlDistributionPoint
 foreach ($crl in $crllist) { Remove-CACrlDistributionPoint $crl.Uri -Force }
-
-# CDP publish locations (UNC and optional local)
-Add-CACRLDistributionPoint -Uri '\\pkilab.win.us\share\PKIData\%3%8.crl' -PublishToServer -PublishDeltaToServer -Force
 Add-CACRLDistributionPoint -Uri 'C:\Windows\System32\CertSrv\CertEnroll\%3%8.crl' -PublishToServer -PublishDeltaToServer -Force
-
-# CDP embedded in issued certs (HTTP only)
 Add-CACRLDistributionPoint -Uri 'http://pki.pkilab.win.us/pkidata/%3%8.crl' -AddToCertificateCDP -AddToFreshestCrl -Force
 
-# AIA publish locations (UNC and optional local)
-certutil -setreg CA\CACertPublicationURLs "1:C:\Windows\System32\CertSrv\CertEnroll\%3%4.crt\n2:\\pkilab.win.us\share\PKIData\%3%4.crt"
-
-# AIA embedded in issued certs (HTTP only)
 Get-CAAuthorityInformationAccess | Where-Object { $_.Uri -like '*ldap*' -or $_.Uri -like '*http*' -or $_.Uri -like '*file*' } | Remove-CAAuthorityInformationAccess -Force
+certutil -setreg CA\CACertPublicationURLs '1:C:\Windows\System32\CertSrv\CertEnroll\%3%4.crt'
 Add-CAAuthorityInformationAccess -AddToCertificateAia 'http://pki.pkilab.win.us/pkidata/%3%4.crt' -Force
+# Scripted ocsp URL addition (alternative)
 
-# OCSP URL (embedded) — use Certification Authority GUI (no registry edits)
-# certsrv.msc -> [CA] -> Properties -> Extensions tab
-#   - Select: Authority Information Access (AIA)
-#   - Click Add... -> Location: ocsp:http://ocsp.pkilab.win.us/ocsp
-#   - Check: Include in the AIA extension of issued certificates
-#   - Ensure the HTTP AIA entry is also checked
-# Apply, then restart service and publish a CRL.
 Restart-Service certsvc
 Start-Sleep -Seconds 2
 certutil -crl
 ```
 
-### 4.4 Publish Issuing CA - NY to AD (from fliss1 or any domain-joined admin machine)
+Publish Issuing CA - NY to AD:
 
 ```powershell
 $cer = Get-ChildItem 'C:\Windows\System32\CertSrv\CertEnroll' -Filter '*PKILab Issuing CA - NY*.crt' | Select-Object -First 1
@@ -491,31 +442,30 @@ certutil -dspublish -f "$($cer.FullName)" NTAuthCA
 certutil -dspublish -f "$($cer.FullName)" SubCA
 ```
 
-### 4.5 Ensure that all required files for PKIView are copied to the DFS pkidata folder
-* C:\\Windows\\System32\\CertSrv\\CertEnroll\\PKILab Issuing CA - NY.crl
-
-* C:\\Windows\\System32\\CertSrv\\CertEnroll\\PKILab Issuing CA - NY+.crl
-
-* C:\\pkidata\\pkilab_issuing_NY.req.crt
+Ensure that both files are copied to the DFS pkidata folder\
+C:\\Windows\\System32\\CertSrv\\CertEnroll\\PKILab Issuing CA - FL.crl\
+C:\\Windows\\System32\\CertSrv\\CertEnroll\\PKILab Issuing CA - FL+.crl\
+C:\\pkidata\\pkilab_issuing_fl.req.crt
 
 ## Enable required certificate templates on BOTH issuing CAs (see Section 6).
-Duplicate the existing OCSP Template
-"PKILab OCSP Response Signing"
-Compatibility
-  Certificate Authority = 2016
-  Certificate recipient = Win10/Server 2016
-Request Handling
-  Purpose = Signature
-  Allow private key to be exported - "leave unchecked"
-Cryptography
-  Minimum Key size = 4096
-Security
-  Add both OCSP server computer objects with Readm Enroll and AutoEnroll
+
+Duplicate the existing OCSP Template\
+"PKILab OCSP Response Signing"\
+Compatibility\
+Certificate Authority = 2016\
+Certificate recipient = Win10/Server 2016\
+Request Handling\
+Purpose = Signature\
+Allow private key to be exported - "leave unchecked"\
+Cryptography\
+Minimum Key size = 4096\
+Security\
+Add both OCSP server computer objects with Readm Enroll and AutoEnroll
 
 ---
 
-## 5\. OCSP Responders — flocsp and nyocsp1 (single URL)
-Purpose: Real-time revocation with responders in both sites. Use single OCSP URL with DNS failover for HA.
+1. OCSP Responders — flocsp and nyocsp1 (single URL)\
+  Purpose: Real-time revocation with responders in both sites. Use single OCSP URL with DNS flip for HA.
 
 Install role on each OCSP server:
 
@@ -527,13 +477,13 @@ On both Issuing CAs, ensure AIA includes the single OCSP URL:
 
 * ocsp:[http://ocsp.pkilab.win.us/ocsp](http://ocsp.pkilab.win.us/ocsp) (checked to include in AIA of issued certs) and restart each CA service.
 
-Configure Online Responder Management on flocsp and nyocsp1:
-For FLOCSP1
-Base CRLs   http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20FL.crl
-Delta CRLs  http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20FL+.crl
-For NYOCSP1
-Base CRLs   http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20NY.crl
-Delta CRLs  http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20NY+.crl
+Configure Online Responder Management on flocsp and nyocsp1:\
+For FLOCSP1\
+Base CRLs   [http://pki.pkilab.win.us/pkidata/PKILab Issuing CA - FL.crl](http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20FL.crl)\
+Delta CRLs  [http://pki.pkilab.win.us/pkidata/PKILab Issuing CA - FL+.crl](http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20FL+.crl)\
+For NYOCSP1\
+Base CRLs   [http://pki.pkilab.win.us/pkidata/PKILab Issuing CA - NY.crl](http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20NY.crl)\
+Delta CRLs  [http://pki.pkilab.win.us/pkidata/PKILab Issuing CA - NU+.crl](http://pki.pkilab.win.us/pkidata/PKILab%20Issuing%20CA%20-%20NU+.crl)
 
 * Create a Revocation Configuration per Issuing CA (two configs per server: FL and NY CA).
 
@@ -549,43 +499,13 @@ Validation from any domain-joined machine:
 
 ```powershell
 certutil -url <path-to-an-end-entity.cer>
-# Select OCSP, click Retrieve; flip ocsp DNS to validate failover.
+# Select OCSP, click Retrieve; flip ocsp CNAME to validate failover.
 ```
 
 ---
 
-## 6\. Enable required certificate templates on BOTH issuing CAs
-
-Duplicate the existing OCSP Template "PKILab OCSP Response Signing" with these settings:
-
-* Compatibility: Certificate Authority = 2016, Certificate recipient = Win10/Server 2016
-
-* Request Handling: Purpose = Signature, Allow private key to be exported - unchecked
-
-* Cryptography: Minimum Key size = 4096
-
-* Security: Add both OCSP server computer objects with Read, Enroll, and AutoEnroll
-
----
-
-## 7\. Important Notes for PKIView and CRL Publishing
-
-* Ensure all files required for PKIView to work are present and correctly published:
-
-  * Root CA and Issuing CA certificates and CRLs must be accessible via HTTP URLs.
-
-  * Files must be copied to the DFS path: \\pkilab.win.us\\share\\PKIData.
-
-* If the CRL or delta CRL is republished, the publish path must be the DFS UNC path (\\pkilab.win.us\\share\\PKIData) and NOT a local path.
-
-* Manual copying of CRLs to the DFS path is not acceptable in production; the CA must publish directly to the DFS path.
-
-* This ensures PKIView and clients always access the latest CRLs and certificates without manual intervention.
-
----
-
-## 8\. Validation
-HTTP checks (should return files):
+1. Validation\
+  HTTP checks (should return files):
 
 * [http://pki.pkilab.win.us/pkidata/PKILab Root CA.crt](http://pki.pkilab.win.us/pkidata/PKILab%20Root%20CA.crt)
 
@@ -609,10 +529,10 @@ certutil -verify -urlfetch '<path-to-an-end-entity-cert.cer>'
 
 ---
 
-## 9\.  Certificate Templates, Autoenrollment, and Horizon VDI (Omnissa)
-Goal: Define and publish the minimum certificate templates, enable autoenrollment, and support Horizon VDI user certificates.
+1. Certificate Templates, Autoenrollment, and Horizon VDI (Omnissa)\
+  Goal: Define and publish the minimum certificate templates, enable autoenrollment, and support Horizon VDI user certificates.
 
-6.1 Create AD groups for template security
+6.1 Create AD groups for template security\
 Create these global security groups (in AD Users and Computers):
 
 * PKI Web Servers — add web servers (flweb1$, nyweb1$) or any server that needs a Web Server cert.
@@ -904,13 +824,13 @@ This appendix provides concrete examples for backend DFS targets and recommended
 
 Example DFS Namespace and targets
 
-* DFS Namespace: \\pkilab.win.us\share
+* DFS Namespace: \\pkilab.win.us\\share
 
 * Folder in namespace: PKIData
 
-* Target 1 (Florida): \\flfilesrv\pki\PKIData
+* Target 1 (Florida): \\flfilesrv\\pki\\PKIData
 
-* Target 2 (New York): \\nyfilesrv\pki\PKIData
+* Target 2 (New York): \\nyfilesrv\\pki\\PKIData
 
 DFS Namespace settings (recommended)
 
@@ -946,7 +866,7 @@ Share permissions (on each backend target share)
 
   * Option A (simplest): Authenticated Users: Read
 
-  * Option B (tightest): PKILAB\flweb1$, PKILAB\nyweb1$: Read
+  * Option B (tightest): PKILAB\\flweb1$, PKILAB\\nyweb1$: Read
 
 NTFS permissions (on the PKIData folder root, inherit to children)
 
@@ -958,15 +878,15 @@ NTFS permissions (on the PKIData folder root, inherit to children)
 
 * PKILAB\\nyiss1$: Modify, This folder, subfolders and files
 
-* Web servers (if using tight ACLs): PKILAB\flweb1$, PKILAB\nyweb1$: Read & execute, This folder, subfolders and files
+* Web servers (if using tight ACLs): PKILAB\\flweb1$, PKILAB\\nyweb1$: Read & execute, This folder, subfolders and files
 
 * (Optional) Deny write for non-PKI admins to protect integrity of published files.
 
 Operational notes
 
-* CAs publish CRLs/certs locally; copy to \\pkilab.win.us\share\PKIData (DFS namespace) or directly into backend target for their site; DFSR replicates across sites.
+* CAs publish CRLs/certs locally; copy to \\pkilab.win.us\\share\\PKIData (DFS namespace) or directly into backend target for their site; DFSR replicates across sites.
 
-* IIS virtual directory on flweb1/nyweb1 points to the DFS namespace path (\\pkilab.win.us\share\PKIData) so both servers always serve the current content.
+* IIS virtual directory on flweb1/nyweb1 points to the DFS namespace path (\\pkilab.win.us\\share\\PKIData) so both servers always serve the current content.
 
 ---
 
@@ -1098,7 +1018,7 @@ This clarifies exactly how to configure CA policy paths so CAs publish to the DF
 
 Key rules
 
-* Publish targets (where the CA writes files): use UNC path \\pkilab.win.us\share\PKIData and optional local CertEnroll folder.
+* Publish targets (where the CA writes files): use UNC path \\pkilab.win.us\\share\\PKIData and optional local CertEnroll folder.
 
 * Embedded URLs in certificates: use only HTTP for AIA/CDP and the single OCSP URL. Do NOT embed UNC paths.
 
@@ -1171,3 +1091,507 @@ certutil -dump <path-to-test-cert.cer> | more
 ```
 
 Why certutil -setreg appears: These are the supported commands ADCS provides to set the CA's publish locations (the CA stores them in its configuration). We avoid manual registry tweaks and use only built-in ADCS cmdlets and certutil.
+
+---
+
+Appendix C — Certificate Services Web Enrollment (/certsrv) Configuration with SSL and Access Control
+
+This appendix covers the setup of the Certificate Services Web Enrollment interface (`/certsrv`) on both web servers (flweb1 and nyweb1) for high availability. The `/certsrv` interface will be configured to use SSL (HTTPS) and restrict access to a specific Active Directory security group.
+
+### Overview
+
+* **Purpose**: Provide a web-based interface for users to request, retrieve, and download certificates from the PKI.
+
+* **Deployment**: Hosted on both flweb1 and nyweb1 for high availability.
+
+* **Access**: HTTPS only, restricted to members of the "PKI Certificate Requestors" AD security group.
+
+* **URL**: [https://flweb1.pkilab.win.us/certsrv](https://flweb1.pkilab.win.us/certsrv) and [https://nyweb1.pkilab.win.us/certsrv](https://nyweb1.pkilab.win.us/certsrv) (or via load-balanced/DNS name if configured).
+
+### Prerequisites
+
+* Both web servers (flweb1, nyweb1) must be domain-joined.
+
+* Both web servers must have IIS installed (completed in Section 2).
+
+* Both web servers must have a valid Web Server certificate enrolled (PKILab Web Server template from Section 6).
+
+* Both Issuing CAs (fliss1, nyiss1) must be operational and publishing templates.
+
+---
+
+### C.1 Create Active Directory Security Group for Access Control
+
+On a domain controller or admin workstation with AD management tools:
+
+```powershell
+# Create the PKI Certificate Requestors group
+New-ADGroup -Name 'PKI Certificate Requestors' -GroupScope Global -GroupCategory Security -Path 'OU=Groups,DC=pkilab,DC=win,DC=us' -Description 'Users authorized to access /certsrv for certificate enrollment'
+
+# Add users or groups who should have access (example: add Domain Users for testing)
+# Add-ADGroupMember -Identity 'PKI Certificate Requestors' -Members 'Domain Users'
+
+# Or add specific users:
+# Add-ADGroupMember -Identity 'PKI Certificate Requestors' -Members 'jdoe', 'asmith'
+```
+
+**Note**: Adjust the `-Path` parameter to match your OU structure. For production, grant access only to users who require certificate enrollment capabilities.
+
+---
+
+### C.2 Install Certificate Enrollment Web Service Role on Both Issuing CAs
+
+The Certificate Enrollment Web Service (CES) and Certificate Enrollment Policy Web Service (CEP) provide modern enrollment capabilities. However, for the classic `/certsrv` interface, we only need the **Web Enrollment** role feature.
+
+On **both Issuing CAs** (fliss1 and nyiss1), install the Web Enrollment role:
+
+```powershell
+# Install the ADCS Web Enrollment role
+Install-WindowsFeature ADCS-Web-Enrollment -IncludeManagementTools
+
+# Configure the Web Enrollment role
+Install-AdcsWebEnrollment -Force
+```
+
+This installs the `/certsrv` application on each Issuing CA. However, for high availability and to offload traffic from the CAs, we will configure IIS Application Request Routing (ARR) or reverse proxy on the web servers to forward requests to the Issuing CAs.
+
+**Alternative approach (simpler for lab)**: Install Web Enrollment directly on the web servers and configure them to communicate with the Issuing CAs.
+
+---
+
+### C.3 Install and Configure Web Enrollment on Web Servers (flweb1 and nyweb1)
+
+For high availability, install the ADCS Web Enrollment role on both web servers. This requires the web servers to be able to communicate with the Issuing CAs.
+
+#### C.3.1 Install Web Enrollment Role on flweb1
+
+On **flweb1**, run:
+
+```powershell
+# Install ADCS Web Enrollment
+Install-WindowsFeature ADCS-Web-Enrollment -IncludeManagementTools
+
+# Configure Web Enrollment to point to the Florida Issuing CA (fliss1)
+Install-AdcsWebEnrollment -CAConfig 'fliss1.pkilab.win.us\PKILab Issuing CA - FL' -Force
+```
+
+#### C.3.2 Install Web Enrollment Role on nyweb1
+
+On **nyweb1**, run:
+
+```powershell
+# Install ADCS Web Enrollment
+Install-WindowsFeature ADCS-Web-Enrollment -IncludeManagementTools
+
+# Configure Web Enrollment to point to the New York Issuing CA (nyiss1)
+Install-AdcsWebEnrollment -CAConfig 'nyiss1.pkilab.win.us\PKILab Issuing CA - NY' -Force
+```
+
+**Note**: Each web server is configured to communicate with its local site's Issuing CA for optimal performance.
+
+---
+
+### C.4 Configure SSL (HTTPS) Binding for /certsrv
+
+The `/certsrv` application should only be accessible over HTTPS. Configure SSL bindings on both web servers.
+
+#### C.4.1 Enroll Web Server Certificate (if not already done)
+
+On each web server (flweb1, nyweb1), ensure a Web Server certificate is enrolled:
+
+```powershell
+# Request a certificate using the PKILab Web Server template
+# Open certlm.msc > Personal > Certificates > Right-click > All Tasks > Request New Certificate
+# Select PKILab Web Server template, add DNS names in SAN (flweb1.pkilab.win.us or nyweb1.pkilab.win.us)
+# Or use autoenrollment if configured in Section 6
+```
+
+#### C.4.2 Bind Certificate to HTTPS (Port 443)
+
+On **flweb1**:
+
+```powershell
+Import-Module WebAdministration
+
+# Find the Web Server certificate
+$cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Subject -like '*CN=flweb1.pkilab.win.us*' } | Select-Object -First 1
+
+# Create HTTPS binding if it doesn't exist
+if (-not (Get-WebBinding -Name 'Default Web Site' -Protocol https -Port 443)) {
+    New-WebBinding -Name 'Default Web Site' -Protocol https -Port 443 -IPAddress '*' -HostHeader 'flweb1.pkilab.win.us' -SslFlags 1
+}
+
+# Bind the certificate to the HTTPS binding
+Push-Location IIS:\SslBindings
+Get-Item 'cert:\LocalMachine\My\$($cert.Thumbprint)' | New-Item '0.0.0.0!443' -Force
+Pop-Location
+
+# Verify binding
+Get-WebBinding -Name 'Default Web Site' -Protocol https
+```
+
+Repeat the same steps on **nyweb1**, replacing `flweb1.pkilab.win.us` with `nyweb1.pkilab.win.us`.
+
+---
+
+### C.5 Restrict Access to /certsrv Using Windows Authentication and Authorization Rules
+
+Configure IIS to require Windows Authentication and restrict access to the "PKI Certificate Requestors" group.
+
+#### C.5.1 Enable Windows Authentication and Disable Anonymous Authentication
+
+On **both web servers** (flweb1 and nyweb1):
+
+```powershell
+Import-Module WebAdministration
+
+# Disable Anonymous Authentication for /certsrv
+Set-WebConfigurationProperty -Filter '/system.webServer/security/authentication/anonymousAuthentication' -Name enabled -Value false -PSPath 'IIS:\' -Location 'Default Web Site/certsrv'
+
+# Enable Windows Authentication for /certsrv
+Set-WebConfigurationProperty -Filter '/system.webServer/security/authentication/windowsAuthentication' -Name enabled -Value true -PSPath 'IIS:\' -Location 'Default Web Site/certsrv'
+
+# Restart IIS to apply changes
+iisreset /noforce
+```
+
+#### C.5.2 Configure Authorization Rules to Restrict Access
+
+On **both web servers** (flweb1 and nyweb1):
+
+```powershell
+Import-Module WebAdministration
+
+# Remove default authorization rules (allow all users)
+Clear-WebConfiguration -Filter '/system.webServer/security/authorization' -PSPath 'IIS:\' -Location 'Default Web Site/certsrv'
+
+# Add authorization rule: Allow only "PKI Certificate Requestors" group
+Add-WebConfigurationProperty -Filter '/system.webServer/security/authorization' -Name '.' -Value @{accessType='Allow'; users=''; roles='PKILAB\PKI Certificate Requestors'} -PSPath 'IIS:\' -Location 'Default Web Site/certsrv'
+
+# Deny all other users
+Add-WebConfigurationProperty -Filter '/system.webServer/security/authorization' -Name '.' -Value @{accessType='Deny'; users='*'} -PSPath 'IIS:\' -Location 'Default Web Site/certsrv'
+
+# Restart IIS
+iisreset /noforce
+```
+
+**Verification**:
+
+* Open a browser and navigate to `https://flweb1.pkilab.win.us/certsrv` (or `https://nyweb1.pkilab.win.us/certsrv`).
+
+* You should be prompted for Windows credentials.
+
+* Only users who are members of "PKI Certificate Requestors" should be able to access the page.
+
+* Non-members should receive an HTTP 401 Unauthorized error.
+
+---
+
+### C.6 Configure HTTP to HTTPS Redirect (Optional but Recommended)
+
+Force all HTTP requests to `/certsrv` to redirect to HTTPS.
+
+On **both web servers** (flweb1 and nyweb1):
+
+```powershell
+Import-Module WebAdministration
+
+# Install URL Rewrite module (if not already installed)
+# Download from: https://www.iis.net/downloads/microsoft/url-rewrite
+# Or use Web Platform Installer: Install-Module -Name WebAdministration
+
+# Add URL Rewrite rule to redirect HTTP to HTTPS for /certsrv
+Add-WebConfigurationProperty -pspath 'IIS:\Sites\Default Web Site' -filter 'system.webServer/rewrite/rules' -name '.' -value @{
+    name='Redirect to HTTPS';
+    stopProcessing='True';
+    match=@{url='certsrv/(.*)'; ignoreCase='True'};
+    conditions=@{input='{HTTPS}'; pattern='off'};
+    action=@{type='Redirect'; url='https://{HTTP_HOST}/certsrv/{R:1}'; redirectType='Permanent'}
+}
+```
+
+**Note**: This requires the IIS URL Rewrite module. If not installed, users accessing `http://flweb1.pkilab.win.us/certsrv` will need to manually navigate to the HTTPS URL.
+
+---
+
+### C.7 Create a Custom Certificate Template for Web Enrollment (Optional)
+
+If you want to provide a specific certificate template for users enrolling via `/certsrv`, create a custom template.
+
+On a domain controller or admin workstation with Certificate Templates MMC (`certtmpl.msc`):
+
+1. **Duplicate an existing template** (e.g., "User" or "Computer"):
+
+  * Right-click the template > Duplicate Template.
+
+2. **Configure the new template**:
+
+  * **General tab**:
+
+    * Template display name: `PKILab Web Enrollment User`
+
+    * Template name: `PKILabWebEnrollmentUser`
+
+    * Validity period: 1 year
+
+    * Renewal period: 6 weeks
+
+  * **Request Handling tab**:
+
+    * Purpose: Signature and encryption (or Signature only for authentication)
+
+    * Allow private key to be exported: Check (if users need to back up their certificates)
+
+  * **Subject Name tab**:
+
+    * Build from Active Directory information: User Principal Name (UPN)
+
+    * Include in subject name: User Principal Name
+
+    * Include in SAN: User Principal Name, Email
+
+  * **Extensions tab**:
+
+    * Application Policies (EKU): Client Authentication (1.3.6.1.5.5.7.3.2)
+
+    * Optionally add: Secure Email (1.3.6.1.5.5.7.3.4) if S/MIME is needed
+
+  * **Security tab**:
+
+    * Grant **Read** and **Enroll** permissions to "PKI Certificate Requestors" group
+
+    * Grant **Read**, **Write**, and **Enroll** permissions to Domain Admins (for management)
+
+  * **Issuance Requirements tab** (optional):
+
+    * Require CA certificate manager approval: Check this if you want manual approval for each request
+
+3. **Publish the template** on both Issuing CAs:
+
+  * On fliss1 and nyiss1: `certsrv.msc` > Certification Authority > \[CA Name\] > Certificate Templates > Right-click > New > Certificate Template to Issue
+
+  * Select `PKILab Web Enrollment User`
+
+---
+
+### C.8 Test /certsrv Access and Certificate Enrollment
+
+1. **Test HTTPS access**:
+
+  * From a domain-joined workstation, open a browser and navigate to:
+
+    * `https://flweb1.pkilab.win.us/certsrv`
+
+    * `https://nyweb1.pkilab.win.us/certsrv`
+
+  * Log in with a user account that is a member of "PKI Certificate Requestors".
+
+  * Verify that the Certificate Services welcome page loads.
+
+2. **Request a certificate**:
+
+  * Click "Request a certificate" > "Advanced certificate request".
+
+  * Select "Create and submit a request to this CA" or "Submit a certificate request by using a base-64-encoded...".
+
+  * Choose the `PKILab Web Enrollment User` template (or another published template).
+
+  * Fill in the required information and submit.
+
+  * If CA manager approval is required, approve the request on the Issuing CA (`certsrv.msc` > Pending Requests).
+
+  * Download and install the issued certificate.
+
+3. **Test access denial**:
+
+  * Log in with a user account that is **not** a member of "PKI Certificate Requestors".
+
+  * Verify that access is denied (HTTP 401 Unauthorized).
+
+---
+
+### C.9 High Availability Considerations for /certsrv
+
+Since `/certsrv` is installed on both flweb1 and nyweb1, users can access either server directly:
+
+* `https://flweb1.pkilab.win.us/certsrv`
+
+* `https://nyweb1.pkilab.win.us/certsrv`
+
+**Options for load balancing or failover**:
+
+1. **DNS Round-Robin** (simple):
+
+  * Create an A record `certsrv.pkilab.win.us` with multiple IPs (10.10.1.241 and 10.20.1.241).
+
+  * Clients will resolve to one of the IPs in a round-robin fashion.
+
+  * **Limitation**: No health checking; if one server is down, some clients may still try to connect to it.
+
+2. **DNS CNAME with manual failover** (similar to pki/ocsp):
+
+  * Create a CNAME `certsrv.pkilab.win.us` pointing to `flweb1.pkilab.win.us` (primary).
+
+  * If flweb1 is down, manually update the CNAME to point to `nyweb1.pkilab.win.us`.
+
+  * Set a low TTL (60-120 seconds) for fast failover.
+
+3. **Load Balancer** (production-grade):
+
+  * Deploy a load balancer (hardware or software, e.g., HAProxy, F5, Azure Load Balancer) in front of flweb1 and nyweb1.
+
+  * Configure health checks on `https://flweb1.pkilab.win.us/certsrv` and `https://nyweb1.pkilab.win.us/certsrv`.
+
+  * Clients access `https://certsrv.pkilab.win.us` (load balancer VIP).
+
+**Recommendation for lab**: Use DNS CNAME with manual failover (Option 2) to match the existing pki/ocsp HA strategy.
+
+**Example DNS configuration**:
+
+```powershell
+# On DNS server
+Add-DnsServerResourceRecordCName -Name 'certsrv' -HostNameAlias 'flweb1.pkilab.win.us' -ZoneName 'pkilab.win.us' -TimeToLive (New-TimeSpan -Seconds 120)
+```
+
+**Failover procedure**:
+
+* If flweb1 is down, update the CNAME:
+
+  ```powershell
+  Set-DnsServerResourceRecordCName -Name 'certsrv' -HostNameAlias 'nyweb1.pkilab.win.us' -ZoneName 'pkilab.win.us'
+  ```
+
+---
+
+### C.10 Security Hardening for /certsrv
+
+1. **Disable HTTP access** (enforce HTTPS only):
+
+  * Remove or disable the HTTP binding (port 80) for the Default Web Site, or configure URL Rewrite to redirect HTTP to HTTPS (see C.6).
+
+2. **Enable HSTS (HTTP Strict Transport Security)**:
+
+  ```powershell
+  Add-WebConfigurationProperty -pspath 'IIS:\Sites\Default Web Site' -filter 'system.webServer/httpProtocol/customHeaders' -name '.' -value @{name='Strict-Transport-Security'; value='max-age=31536000; includeSubDomains'}
+  ```
+
+3. **Restrict TLS versions**:
+
+  * Disable TLS 1.0 and TLS 1.1; enable only TLS 1.2 and TLS 1.3.
+
+  * Use IIS Crypto tool or registry settings to configure.
+
+4. **Audit and monitor access**:
+
+  * Enable IIS logging for the Default Web Site.
+
+  * Monitor logs for unauthorized access attempts.
+
+  * Enable Windows Security Auditing for Logon/Logoff events.
+
+5. **Limit certificate template visibility**:
+
+  * Only publish templates that should be available via `/certsrv`.
+
+  * Use template permissions to restrict enrollment to specific groups.
+
+6. **Regular certificate renewal**:
+
+  * Ensure Web Server certificates on flweb1 and nyweb1 are renewed before expiry.
+
+  * Configure autoenrollment or set up renewal reminders.
+
+---
+
+### C.11 Troubleshooting /certsrv
+
+**Issue**: Cannot access `/certsrv` (HTTP 404 or 500 error)
+
+* **Solution**: Verify that the ADCS Web Enrollment role is installed and configured:
+
+  ```powershell
+  Get-WindowsFeature ADCS-Web-Enrollment
+  ```
+
+* Ensure the `/certsrv` application exists in IIS:
+
+  ```powershell
+  Get-WebApplication -Site 'Default Web Site' -Name 'certsrv'
+  ```
+
+**Issue**: Access denied (HTTP 401) for authorized users
+
+* **Solution**: Verify that the user is a member of "PKI Certificate Requestors":
+
+  ```powershell
+  Get-ADGroupMember -Identity 'PKI Certificate Requestors'
+  ```
+
+* Check IIS authorization rules:
+
+  ```powershell
+  Get-WebConfiguration -Filter '/system.webServer/security/authorization' -PSPath 'IIS:\' -Location 'Default Web Site/certsrv'
+  ```
+
+**Issue**: Certificate request fails or templates are not visible
+
+* **Solution**: Verify that the Issuing CA is reachable from the web server:
+
+  ```powershell
+  certutil -ping -config 'fliss1.pkilab.win.us\PKILab Issuing CA - FL'
+  ```
+
+* Ensure the user has Enroll permissions on the certificate template.
+
+* Check that the template is published on the Issuing CA.
+
+**Issue**: HTTPS certificate warning or error
+
+* **Solution**: Verify that the Web Server certificate is valid and trusted:
+
+  ```powershell
+  Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Subject -like '*flweb1*' }
+  ```
+
+* Ensure the certificate chain includes the Root CA and Issuing CA.
+
+* Check that the certificate SAN includes the hostname (e.g., `flweb1.pkilab.win.us`).
+
+**Issue**: Web Enrollment points to the wrong CA
+
+* **Solution**: Reconfigure the Web Enrollment role to point to the correct CA:
+
+  ```powershell
+  Uninstall-AdcsWebEnrollment -Force
+  Install-AdcsWebEnrollment -CAConfig 'fliss1.pkilab.win.us\PKILab Issuing CA - FL' -Force
+  ```
+
+---
+
+### C.12 Summary
+
+You have successfully configured the Certificate Services Web Enrollment (`/certsrv`) interface on both web servers (flweb1 and nyweb1) with the following features:
+
+* **High Availability**: `/certsrv` is hosted on both web servers for redundancy.
+
+* **SSL/TLS**: Access is restricted to HTTPS only, using Web Server certificates issued by the PKI.
+
+* **Access Control**: Only members of the "PKI Certificate Requestors" AD security group can access `/certsrv`.
+
+* **Certificate Enrollment**: Users can request, retrieve, and download certificates via a web browser.
+
+* **Security Hardening**: Windows Authentication, authorization rules, HTTPS enforcement, and optional HSTS.
+
+**Next Steps**:
+
+* Train users on how to access `/certsrv` and request certificates.
+
+* Document the failover procedure for the `certsrv.pkilab.win.us` DNS CNAME.
+
+* Monitor IIS logs and CA event logs for enrollment activity and errors.
+
+* Periodically review and update the "PKI Certificate Requestors" group membership.
+
+---
+
+**End of Appendix C**
