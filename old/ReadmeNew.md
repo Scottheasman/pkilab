@@ -34,8 +34,8 @@ This manual provides step-by-step deployment instructions to build a two-tier Mi
 - `%8` = CRL name suffix (CRL number + renewal)
 
 **Examples:**
-- `%3%8.crl` 12 PKILab Issuing CA - FL.crl13 (with CRL numbering)
-- `%3%4.crt` 12 PKILab Issuing CA - FL.crt13 (with renewal suffix)
+- `%3%8.crl` -> PKILab Issuing CA - FL.crl13 (with CRL numbering)
+- `%3%4.crt` -> PKILab Issuing CA - FL.crt13 (with renewal suffix)
 
 ---
 
@@ -56,7 +56,7 @@ On a DNS server hosting `pkilab.win.us`, create the following **A records**:
 | ocsp.pkilab.win.us     | 10.10.1.221    |
 | ocsp.pkilab.win.us     | 10.20.1.221    |
 
-- Set TTL to 600120 seconds for `pki.pkilab.win.us` and `ocsp.pkilab.win.us` to enable quick failover.
+- Set TTL to 60-0120 seconds for `pki.pkilab.win.us` and `ocsp.pkilab.win.us` to enable quick failover.
 
 **Note:**
 A single HTTP namespace for CDP/AIA/OCSP keeps URLs embedded in certificates stable for the PKI lifetime.
@@ -65,12 +65,30 @@ A single HTTP namespace for CDP/AIA/OCSP keeps URLs embedded in certificates sta
 
 # 2. DFS Namespace Setup
 
-- Create a DFS Namespace at `\\pkilab.win.us\share` with a folder target `PKIData` pointing to backend folders in Florida and New York.
-- Ensure multi-site targets are healthy and replicate.
-- Set NTFS and share permissions on DFS target folders to grant **Modify** to:
-  - `PKILAB\\fliss1$`
-  - `PKILAB\\nyiss1$`
-  - Administrators (Full Control)
+# Create the folder if it doesn't exist
+$folderPath = "C:\PKIData"
+if (-Not (Test-Path $folderPath)) {
+    New-Item -Path $folderPath -ItemType Directory
+}
+
+# Create the SMB share if it doesn't exist
+$shareName = "PKIData"
+if (-Not (Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue)) {
+    New-SmbShare -Name $shareName -Path $folderPath -FullAccess "Administrators","SYSTEM"
+}
+
+# Set Share Permissions
+Grant-SmbShareAccess -Name $shareName -AccountName "lab.local\txsubca1$" -AccessRight Change -Force
+Grant-SmbShareAccess -Name $shareName -AccountName "lab.local\lvsubca1$" -AccessRight Change -Force
+Grant-SmbShareAccess -Name $shareName -AccountName "lab.local\txweb1$" -AccessRight Read -Force
+Grant-SmbShareAccess -Name $shareName -AccountName "lab.local\lvweb1$" -AccessRight Read -Force
+
+# Set NTFS Permissions recursively with single quotes to handle $ in account names
+icacls $folderPath /grant "SYSTEM:(OI)(CI)F" /grant "Administrators:(OI)(CI)F" /T
+icacls $folderPath /grant 'lab.local\txsubca1$:(OI)(CI)M' /grant 'lab.local\lvsubca1$:(OI)(CI)M' /T
+icacls $folderPath /grant 'lab.local\txweb1$:(OI)(CI)RX' /grant 'lab.local\lvweb1$:(OI)(CI)RX' /T
+
+Write-Host "Share and NTFS permissions set successfully on $env:COMPUTERNAME"
 
 ---
 

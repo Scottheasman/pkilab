@@ -21,7 +21,7 @@ Modern, domain-integrated Public Key Infrastructure (PKI) for **lab.local** — 
 ## 1. Overview & Environment
 
 | Component | Function | Hostname | IP | Location |
-|----|----|----|----|----|
+|------------|-----------|-----------|----|-----------|
 | Domain Controllers | AD DS | **txdc1.lab.local** / **lvdc1.lab.local** | 10.30.1.201 / 10.40.1.201 | Texas / Las Vegas |
 | Root CA | Offline standalone | **rootca.lab.local** | 10.30.1.131 | Offline vault |
 | Issuing CAs | Enterprise subordinate | **txsubca1.lab.local**, **lvsubca1.lab.local** | 10.30.1.211 / 10.40.1.211 | TX / LV |
@@ -32,14 +32,14 @@ Modern, domain-integrated Public Key Infrastructure (PKI) for **lab.local** — 
 - HTTP (AIA/CDP): `http://pki.lab.local/pkidata/`  
 - OCSP: `http://ocsp.lab.local/ocsp`  
 
-**DFS Share (for PKI Data Replication):** `\\lab.local\\share\\pkidata`
+**DFS Share (for PKI Data Replication):** `\\lab.local\share\pkidata`
 
 **NetBIOS name:** `LAB`
 
 ### ADCS Path Variables
 
 | Variable | Description |
-|----|----|
+|-----------|-------------|
 | `%3` | CA Common Name |
 | `%4` | Certificate renewal suffix |
 | `%8` | CRL name suffix |
@@ -55,7 +55,7 @@ Example:
 Using **DNS-based HA failover** (no load balancer required):
 
 | Record | Target | IP | Purpose |
-|----|----|----|----|
+|---------|---------|----|----------|
 | `txweb1.lab.local` | 10.30.1.241 | IIS Host TX |
 | `lvweb1.lab.local` | 10.40.1.241 | IIS Host LV |
 | `txocsp.lab.local` | 10.30.1.221 | OCSP TX |
@@ -63,7 +63,7 @@ Using **DNS-based HA failover** (no load balancer required):
 | `pki.lab.local` | 10.30.1.241 / 10.40.1.241 | HTTP AIA/CDP namespace |
 | `ocsp.lab.local` | 10.30.1.221 / 10.40.1.221 | OCSP namespace |
 
-**TTL Recommendation:** 60–120 seconds  
+**TTL Recommendation:** 60–120 seconds.  
 Ensures fast DNS failover between regions.
 
 ---
@@ -133,7 +133,7 @@ Restart-WebAppPool DefaultAppPool
 ### 4.4 Create Virtual Directory for DFS Path
 
 ```powershell
-$vDirProperties = @{ Site = 'Default Web Site'; Name = 'pkidata'; PhysicalPath = '\\\\lab.local\\share\\PKIData' }
+$vDirProperties = @{ Site = 'Default Web Site'; Name = 'pkidata'; PhysicalPath = '\\lab.local\\share\\PKIData' }
 New-WebVirtualDirectory @vDirProperties
 ```
 
@@ -142,7 +142,11 @@ New-WebVirtualDirectory @vDirProperties
 ```powershell
 Set-WebConfigurationProperty -Filter /system.webServer/directoryBrowse -Name enabled -Value true -PSPath "IIS:\\Sites\\Default Web Site\\pkidata"
 Set-WebConfigurationProperty -Filter /system.webServer/security/requestFiltering -Name allowDoubleEscaping -Value true -PSPath "IIS:\\Sites\\Default Web Site"
+```
 
+Optional MIME types:
+
+```powershell
 Add-WebConfigurationProperty -pspath 'IIS:' -filter "system.webServer/staticContent" -name "." -value @{fileExtension='.crl'; mimeType='application/pkix-crl'}
 Add-WebConfigurationProperty -pspath 'IIS:' -filter "system.webServer/staticContent" -name "." -value @{fileExtension='.crt'; mimeType='application/x-x509-ca-cert'}
 ```
@@ -179,12 +183,12 @@ Install-AdcsCertificationAuthority -CAType StandaloneRootCA -CACommonName 'Lab R
 ### 5.3 Configure CRL/AIA Registry
 
 ```powershell
-certutil -setreg CA\\ValidityPeriodUnits 10
-certutil -setreg CA\\ValidityPeriod Years
-certutil -setreg CA\\CRLPeriodUnits 1
-certutil -setreg CA\\CRLPeriod Years
-certutil -setreg CA\\CRLOverlapPeriodUnits 7
-certutil -setreg CA\\CRLOverlapPeriod Days
+certutil -setreg CA\ValidityPeriodUnits 10
+certutil -setreg CA\ValidityPeriod Years
+certutil -setreg CA\CRLPeriodUnits 1
+certutil -setreg CA\CRLPeriod Years
+certutil -setreg CA\CRLOverlapPeriodUnits 7
+certutil -setreg CA\CRLOverlapPeriod Days
 ```
 
 ### 5.4 Configure CDP and AIA
@@ -201,7 +205,7 @@ Add entries:
 ```powershell
 Add-CACRLDistributionPoint -Uri 'C:\\Windows\\System32\\CertSrv\\CertEnroll\\%3%8.crl' -PublishToServer -Force
 Add-CACRLDistributionPoint -Uri 'http://pki.lab.local/pkidata/%3%8.crl' -AddToCertificateCDP -Force
-certutil -setreg CA\\CACertPublicationURLs '1:C:\\Windows\\System32\\CertSrv\\CertEnroll\\%3%4.crt'
+certutil -setreg CA\CACertPublicationURLs '1:C:\\Windows\\System32\\CertSrv\\CertEnroll\\%3%4.crt'
 Add-CAAuthorityInformationAccess -AddToCertificateAia 'http://pki.lab.local/pkidata/%3%4.crt' -Force
 ```
 
@@ -235,12 +239,12 @@ Provide enterprise-grade certificate issuance with modern CDP/AIA/OCSP design.
 ### 6.1 Core Configuration
 
 ```powershell
-certutil -setreg CA\\ValidityPeriodUnits 1
-certutil -setreg CA\\ValidityPeriod Years
-certutil -setreg CA\\CRLPeriodUnits 52
-certutil -setreg CA\\CRLPeriod Weeks
-certutil -setreg CA\\CRLOverlapPeriodUnits 3
-certutil -setreg CA\\CRLOverlapPeriod Days
+certutil -setreg CA\ValidityPeriodUnits 1
+certutil -setreg CA\ValidityPeriod Years
+certutil -setreg CA\CRLPeriodUnits 52
+certutil -setreg CA\CRLPeriod Weeks
+certutil -setreg CA\CRLOverlapPeriodUnits 3
+certutil -setreg CA\CRLOverlapPeriod Days
 
 # Remove legacy entries
 Get-CACrlDistributionPoint | ForEach-Object { Remove-CACrlDistributionPoint $_.Uri -Force }
@@ -248,11 +252,11 @@ Get-CAAuthorityInformationAccess | Where-Object { $_.Uri -match '^(ldap|file)' }
 
 # Add CRL Paths
 Add-CACRLDistributionPoint -Uri 'C:\\Windows\\System32\\CertSrv\\CertEnroll\\%3%8.crl' -PublishToServer -Force
-Add-CACRLDistributionPoint -Uri '\\\\lab.local\\share\\PKIData\\%3%8.crl' -PublishToServer -Force
+Add-CACRLDistributionPoint -Uri '\\lab.local\\share\\PKIData\\%3%8.crl' -PublishToServer -Force
 Add-CACRLDistributionPoint -Uri 'http://pki.lab.local/pkidata/%3%8.crl' -AddToCertificateCDP -Force
 
 # Add AIA + OCSP
-certutil -setreg CA\\CACertPublicationURLs "1:C:\\Windows\\System32\\CertSrv\\CertEnroll\\%3%4.crt\n2:\\\\lab.local\\share\\PKIData\\%3%4.crt"
+certutil -setreg CA\\CACertPublicationURLs "1:C:\\Windows\\System32\\CertSrv\\CertEnroll\\%3%4.crt\n2:\\lab.local\\share\\PKIData\\%3%4.crt"
 Add-CAAuthorityInformationAccess -AddToCertificateAia 'http://pki.lab.local/pkidata/%3%4.crt' -Force
 Add-CAAuthorityInformationAccess -AddToCertificateOcsp 'http://ocsp.lab.local/ocsp' -Force
 
@@ -267,7 +271,7 @@ certutil -crl
 ### CRL Distribution Points
 
 | Setting | Local | UNC | HTTP |
-|----|----|----|----|
+|----------|--------|------|------|
 | Publish CRLs | ✅ | ✅ | ❌ |
 | Delta CRLs | ✅ | ✅ | ❌ |
 | Include in CDP extension | ❌ | ❌ | ✅ |
@@ -275,7 +279,7 @@ certutil -crl
 ### Authority Information Access
 
 | URL | AIA Extension | OCSP Extension | Purpose |
-|----|----|----|----|
+|------|----------------|----------------|----------|
 | Local File Path | ❌ | ❌ | Internal use only |
 | HTTP AIA | ✅ | ❌ | Client cert chain building |
 | OCSP URL | ❌ | ✅ | Real-time revocation |
@@ -287,60 +291,37 @@ certutil -crl
 
 ## 8. Deep PKI Configuration Validation Script
 
-```powershell
-Write-Host "=== PKI Configuration Validation ===" -ForegroundColor Cyan
+Use this PowerShell validation script to confirm registry accuracy for CDP/AIA/OCSP settings.
 
+```powershell
+# --- Deep PKI Configuration Validation ---
+Write-Host "=== PKI Validation Check ===" -ForegroundColor Cyan
 $expectedCDP_HTTP = 'http://pki.lab.local/pkidata/'
 $expectedAIA_HTTP = 'http://pki.lab.local/pkidata/'
 $expectedOCSP = 'http://ocsp.lab.local/ocsp'
 
-$caName = (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\CertSvc\\Configuration').Active
-Write-Host "`nCA Name: $caName" -ForegroundColor Yellow
-
-Write-Host "`n--- CRL Distribution Points ---" -ForegroundColor Yellow
-$crlOutput = certutil -getreg CA\\CRLPublicationURLs
-$crlOutput | Where-Object { $_ -match '^\\s+\\d+:\\s+\\d+:' } | ForEach-Object {
-  if ($_ -match '^\\s+\\d+:\\s+(\\d+):(.+)$') {
-    $flags = [int]$matches[1]
-    $url = $matches[2].Trim()
-    $addToCertCDP = ($flags -band 0x02) -ne 0
-
-    if ($url -match $expectedCDP_HTTP -and $addToCertCDP) {
-      Write-Host "CDP OK ✅ $url" -ForegroundColor Green
-    } elseif ($url -match 'ldap://|file://' -and $addToCertCDP) {
-      Write-Host "Legacy CDP embedded ❌ $url" -ForegroundColor Red
-    }
-  }
+function Decode-Flags($value) {
+  $f = @{}
+  $f['CertCDP'] = ($value -band 0x04) -ne 0
+  $f['CertAIA'] = ($value -band 0x10) -ne 0
+  $f['CertOCSP'] = ($value -band 0x20) -ne 0
+  return $f
 }
 
-Write-Host "`n--- Authority Information Access ---" -ForegroundColor Yellow
-$aiaOutput = certutil -getreg CA\\CACertPublicationURLs
-$aiaOutput | Where-Object { $_ -match '^\\s+\\d+:\\s+\\d+:' } | ForEach-Object {
-  if ($_ -match '^\\s+\\d+:\\s+(\\d+):(.+)$') {
-    $flags = [int]$matches[1]
-    $url = $matches[2].Trim()
-    $addToAIA = ($flags -band 0x02) -ne 0
-    $addToOCSP = ($flags -band 0x20) -ne 0
+$keys = Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\CertSvc\\Configuration\\*'
+$urls = $keys | Get-Member -MemberType NoteProperty | ForEach-Object { $keys.$($_.Name) }
 
-    if ($url -match $expectedAIA_HTTP -and $addToAIA) {
-      Write-Host "AIA OK ✅ $url" -ForegroundColor Green
-    } elseif ($url -match $expectedOCSP -and $addToOCSP) {
-      Write-Host "OCSP OK ✅ $url" -ForegroundColor Green
-    } elseif ($url -match 'ocsp' -and $addToOCSP -and $url -notmatch $expectedOCSP) {
-      Write-Host "OCSP Wrong Domain ⚠️ $url (should be $expectedOCSP)" -ForegroundColor Yellow
-    } elseif ($url -match 'ldap://|file://' -and ($addToAIA -or $addToOCSP)) {
-      Write-Host "Legacy AIA/OCSP embedded ❌ $url" -ForegroundColor Red
-    }
-  }
+foreach ($entry in $urls) {
+  $url, $val = $entry -split '\s+'
+  $decoded = Decode-Flags([int]$val)
+  if ($url -match $expectedCDP_HTTP -and $decoded['CertCDP']) { Write-Host "CDP OK ✅ $url" -ForegroundColor Green }
+  elseif ($url -match $expectedAIA_HTTP -and $decoded['CertAIA']) { Write-Host "AIA OK ✅ $url" -ForegroundColor Green }
+  elseif ($url -match $expectedOCSP -and $decoded['CertOCSP']) { Write-Host "OCSP OK ✅ $url" -ForegroundColor Green }
+  elseif ($url -match 'ldap|file') { Write-Host "Legacy URL ❌ $url" -ForegroundColor Red }
 }
 
-Write-Host "`n=== Validation Complete ===" -ForegroundColor Cyan
+Write-Host "=== Validation Complete ===" -ForegroundColor Cyan
 ```
-
-Expected Output (All Green):
-- CDP OK ✅ http://pki.lab.local/pkidata/%3%8.crl
-- AIA OK ✅ http://pki.lab.local/pkidata/%3%4.crt
-- OCSP OK ✅ http://ocsp.lab.local/ocsp
 
 ---
 
