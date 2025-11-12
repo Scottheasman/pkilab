@@ -162,64 +162,79 @@ Acts as the **trust anchor** for the environment.
 ### 5.1 Create CAPolicy.inf
 
 ```powershell
-@'
-[Version]
-Signature="$Windows NT$"
-[Certsrv_Server]
-RenewalKeyLength=4096
-RenewalValidityPeriod=Years
-RenewalValidityPeriodUnits=20
-LoadDefaultTemplates=0
-AlternateSignatureAlgorithm=0
-'@ | Out-File C:\\Windows\\CAPolicy.inf -Encoding ascii
+Set-Content  C:\Windows\CAPolicy.inf '[Version]'
+Add-Content C:\Windows\CAPolicy.inf 'Signature="$Windows NT$"'
+Add-Content C:\Windows\CAPolicy.inf '[InternalPolicy]'
+Add-Content C:\Windows\CAPolicy.inf 'URL=http://pki.lab.local/pkidata/cps.html'
+Add-Content C:\Windows\CAPolicy.inf '[Certsrv_Server]'
+Add-Content C:\Windows\CAPolicy.inf 'RenewalKeyLength=4096'
+Add-Content C:\Windows\CAPolicy.inf 'RenewalValidityPeriod=Years'
+Add-Content C:\Windows\CAPolicy.inf 'RenewalValidityPeriodUnits=20'
+Add-Content C:\Windows\CAPolicy.inf 'LoadDefaultTemplates=0'
+Add-Content C:\Windows\CAPolicy.inf 'AlternateSignatureAlgorithm=0'
 ```
 
-### 5.2 Install Root CA
+### 5.2 Install AD CS Role and Root CA
 
 ```powershell
 Add-WindowsFeature ADCS-Cert-Authority -IncludeManagementTools
-Install-AdcsCertificationAuthority -CAType StandaloneRootCA -CACommonName 'Lab Root CA' -ValidityPeriod Years -ValidityPeriodUnits 20 -HashAlgorithmName SHA256 -KeyLength 4096
+
+$vCaRootProperties = @{
+  CACommonName    = 'Lab Root CA'
+  CADistinguishedNameSuffix   = 'O=Lab,L=Fort Lauderdale,S=Florida,C=US'
+  CAType    = 'StandaloneRootCA'
+  CryptoProviderName    = 'RSA#Microsoft Software Key Storage Provider'
+  HashAlgorithmName    = 'SHA256'
+  KeyLength    = 4096
+  ValidityPeriod    = 'Years'
+  ValidityPeriodUnits    = 20
+}
+Install-AdcsCertificationAuthority @vCaRootProperties -Force -OverwriteExistingKey
 ```
 
-### 5.3 Configure CRL/AIA Registry
+### 5.3 Configure Validity and CRL Settings
 
 ```powershell
-certutil -setreg CA\\ValidityPeriodUnits 10
-certutil -setreg CA\\ValidityPeriod Years
-certutil -setreg CA\\CRLPeriodUnits 1
-certutil -setreg CA\\CRLPeriod Years
-certutil -setreg CA\\CRLOverlapPeriodUnits 7
-certutil -setreg CA\\CRLOverlapPeriod Days
-```
+certutil -setreg CA\ValidityPeriodUnits 10
+certutil -setreg CA\ValidityPeriod Years
+certutil -setreg CA\CRLPeriodUnits 1
+certutil -setreg CA\CRLPeriod Years
+certutil -setreg CA\CRLDeltaPeriodUnits 0
+certutil -setreg CA\CRLOverlapPeriodUnits 7
+certutil -setreg CA\CRLOverlapPeriod Days
+certutil -setreg CA\AuditFilter 127
 
 ### 5.4 Configure CDP and AIA
 
-Remove defaults:
-
 ```powershell
-Get-CACrlDistributionPoint | ForEach-Object { Remove-CACrlDistributionPoint $_.Uri -Force }
-Get-CAAuthorityInformationAccess | Where-Object { $_.Uri -match '^(ldap|file)://' } | Remove-CAAuthorityInformationAccess -Force
-```
+# Clear existing CDPs
+$crllist = Get-CACrlDistributionPoint
+foreach ($crl in $crllist) { Remove-CACrlDistributionPoint $crl.Uri -Force }
 
-Add entries:
+# Add CDP publish locations (UNC and local)
+Add-CACRLDistributionPoint -Uri 'C:\Windows\System32\CertSrv\CertEnroll\%3%8.crl' -PublishToServer -PublishDeltaToServer -Force
 
-```powershell
-Add-CACRLDistributionPoint -Uri 'C:\\Windows\\System32\\CertSrv\\CertEnroll\\%3%8.crl' -PublishToServer -Force
-Add-CACRLDistributionPoint -Uri 'http://pki.lab.local/pkidata/%3%8.crl' -AddToCertificateCDP -Force
-certutil -setreg CA\\CACertPublicationURLs '1:C:\\Windows\\System32\\CertSrv\\CertEnroll\\%3%4.crt'
+# Add HTTP CDP embedded in issued certs
+Add-CACRLDistributionPoint -Uri 'http://pki.lab.local/pkidata/%3%8.crl' -AddToCertificateCDP -AddToFreshestCrl -Force
+
+# Clear existing AIA entries
+Get-CAAuthorityInformationAccess | Where-Object { $_.Uri -like '*ldap*' -or $_.Uri -like '*http*' -or $_.Uri -like '*file*' } | Remove-CAAuthorityInformationAccess -Force
+
+# Set AIA publish locations (local and UNC)
+certutil -setreg CA\CACertPublicationURLs '1:C:\Windows\System32\CertSrv\CertEnroll\%3%4.crt'
+
+# Add HTTP AIA embedded in issued certs
 Add-CAAuthorityInformationAccess -AddToCertificateAia 'http://pki.lab.local/pkidata/%3%4.crt' -Force
 ```
-
-### 5.5 Publish CRL
+### 5.5 Publish Initial CRL and Restart Service
 
 ```powershell
 Restart-Service certsvc
 Start-Sleep -Seconds 2
-certutil -crl
+certutil -CRL
 
 Rename-Item "C:\windows\system32\Certsrv\Certenroll\labrootca_Lab Root CA.crt" "Lab Root CA.crt" 
 explorer.exe "C:\windows\system32\Certsrv\Certenroll" 
-
 ```
 
 Copy:
