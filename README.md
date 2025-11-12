@@ -14,7 +14,8 @@ Modern, domain-integrated Public Key Infrastructure (PKI) for **lab.local** — 
 6. [Issuing CAs (TX & LV)](#6-issuing-cas-tx--lv)  
 7. [Validation & Compliance Checklist](#7-validation--compliance-checklist)  
 8. [Deep PKI Configuration Validation Script](#8-deep-pki-configuration-validation-script)  
-9. [Final Notes](#9-final-notes)
+9. [Final Notes](#9-final-notes)  
+10. [Appendix A – Revoking an Issuing CA Certificate](#appendix-a--revoking-an-issuing-ca-certificate)
 
 ---
 
@@ -45,8 +46,8 @@ Modern, domain-integrated Public Key Infrastructure (PKI) for **lab.local** — 
 | `%8` | CRL name suffix |
 
 Example:  
-- `%3%8.crl` → `PKI Lab Issuing CA - TX.crl`  
-- `%3%4.crt` → `PKI Lab Issuing CA - TX.crt`
+- `%3%8.crl` → `Lab Issuing CA - TX.crl`  
+- `%3%4.crt` → `Lab Issuing CA - TX.crt`
 
 ---
 
@@ -90,6 +91,8 @@ Grant-SmbShareAccess -Name PKIData -AccountName "LAB\\txsubca1$" -AccessRight Ch
 Grant-SmbShareAccess -Name PKIData -AccountName "LAB\\lvsubca1$" -AccessRight Change -Force
 Grant-SmbShareAccess -Name PKIData -AccountName "LAB\\txweb1$" -AccessRight Read -Force
 Grant-SmbShareAccess -Name PKIData -AccountName "LAB\\lvweb1$" -AccessRight Read -Force
+Grant-SmbShareAccess -Name PKIData -AccountName "LAB\\txocsp$" -AccessRight Read -Force
+Grant-SmbShareAccess -Name PKIData -AccountName "LAB\\lvocsp$" -AccessRight Read -Force
 
 # NTFS Permissions
 icacls "C:\\PKIData" /grant "SYSTEM:(OI)(CI)F" /grant "Administrators:(OI)(CI)F" /T
@@ -97,6 +100,8 @@ icacls "C:\\PKIData" /grant 'LAB\\txsubca1$:(OI)(CI)M' /T
 icacls "C:\\PKIData" /grant 'LAB\\lvsubca1$:(OI)(CI)M' /T
 icacls "C:\\PKIData" /grant 'LAB\\txweb1$:(OI)(CI)RX' /T
 icacls "C:\\PKIData" /grant 'LAB\\lvweb1$:(OI)(CI)RX' /T
+icacls "C:\\PKIData" /grant 'LAB\\txocsp$:(OI)(CI)RX' /T
+icacls "C:\\PKIData" /grant 'LAB\\lvocsp$:(OI)(CI)RX' /T
 ```
 
 ---
@@ -126,7 +131,7 @@ icacls 'C:\\PKIData' /grant 'LAB\\PKIWebSvc:(OI)(CI)M' /T
 
 ```powershell
 Import-Module WebAdministration
-Set-ItemProperty IIS:\AppPools\DefaultAppPool -Name processModel -Value @{userName='LAB\\PKIWebSvc';password='<password>'}
+Set-ItemProperty IIS:\\AppPools\\DefaultAppPool -Name processModel -Value @{userName='LAB\\PKIWebSvc';password='<password>'}
 Restart-WebAppPool DefaultAppPool
 ```
 
@@ -209,7 +214,12 @@ Add-CAAuthorityInformationAccess -AddToCertificateAia 'http://pki.lab.local/pkid
 
 ```powershell
 Restart-Service certsvc
+Start-Sleep -Seconds 2
 certutil -crl
+
+Rename-Item "C:\windows\system32\Certsrv\Certenroll\labrootca_Lab Root CA.crt" "Lab Root CA.crt" 
+explorer.exe "C:\windows\system32\Certsrv\Certenroll" 
+
 ```
 
 Copy:
@@ -230,9 +240,106 @@ certutil -dspublish -f "\\lab.local\\share\\pkidata\\Lab Root CA.crl" "Lab Root 
 ## 6. Issuing CAs (TX & LV)
 
 ### Purpose
-Provide enterprise-grade certificate issuance with modern CDP/AIA/OCSP design.
+Provide enterprise-grade certificate issuance with modern CDP/AIA/OCSP design and high availability.
 
-### 6.1 Core Configuration
+---
+
+### 6.0 Install Issuing CAs txsubca1 (Texas) and lvsubca1 (Vegas)
+
+**Purpose:** Install two enterprise issuing CAs. Each publishes CRLs locally and embeds a single HTTP CDP/AIA URL pointing to `http://pki.lab.local/pkidata/`.
+
+#### 6.0.1 Install Issuing CA on txsubca1
+
+```powershell
+# CAPolicy.inf (prevents default templates auto-load)
+Set-Content  C:\\Windows\\CAPolicy.inf '[Version]'
+Add-Content C:\\Windows\\CAPolicy.inf 'Signature="$Windows NT$"'
+Add-Content C:\\Windows\\CAPolicy.inf '[InternalPolicy]'
+Add-Content C:\\Windows\\CAPolicy.inf 'URL=http://pki.lab.local/pkidata/cps.html'
+Add-Content C:\\Windows\\CAPolicy.inf '[Certsrv_Server]'
+Add-Content C:\\Windows\\CAPolicy.inf 'LoadDefaultTemplates=0'
+
+# Role and Request
+Add-WindowsFeature ADCS-Cert-Authority -IncludeManagementTools
+
+$vCaIssProperties = @{
+  CACommonName = 'Lab Issuing CA - TX'
+  CADistinguishedNameSuffix = 'O=PKI,L=Dallas,S=Texas,C=US'
+  CAType = 'EnterpriseSubordinateCA'
+  CryptoProviderName = 'RSA#Microsoft Software Key Storage Provider'
+  HashAlgorithmName = 'SHA256'
+  KeyLength = 4096
+  DatabaseDirectory = 'C:\\pkidata'
+  OutputCertRequestFile = 'C:\\pkidata\\lab_issuing_tx.req'
+}
+Install-AdcsCertificationAuthority @vCaIssProperties -Force -OverwriteExistingKey
+```
+
+#### 6.0.2 Approve and Install TX SubCA Certificate
+
+Perform the following on the Root CA:
+
+```powershell
+certreq -submit C:\\pkidata\\lab_issuing_tx.req C:\\pkidata\\lab_issuing_tx.cer
+certutil -getrequests
+certutil -approve <RequestID>
+certutil -retrieve <RequestID> C:\\pkidata\\lab_issuing_tx.cer
+```
+
+Copy the `.cer` back to `txsubca1` and install via **Certification Authority → All Tasks → Install CA Certificate**.
+
+Start the CA service:
+
+```powershell
+Start-Service certsvc
+```
+
+---
+
+#### 6.0.3 Install Issuing CA on lvsubca1
+
+```powershell
+# CAPolicy.inf
+Set-Content  C:\\Windows\\CAPolicy.inf '[Version]'
+Add-Content C:\\Windows\\CAPolicy.inf 'Signature="$Windows NT$"'
+Add-Content C:\\Windows\\CAPolicy.inf '[InternalPolicy]'
+Add-Content C:\\Windows\\CAPolicy.inf 'URL=http://pki.lab.local/pkidata/cps.html'
+Add-Content C:\\Windows\\CAPolicy.inf '[Certsrv_Server]'
+Add-Content C:\\Windows\\CAPolicy.inf 'LoadDefaultTemplates=0'
+
+Add-WindowsFeature ADCS-Cert-Authority -IncludeManagementTools
+
+$vCaIssProperties = @{
+  CACommonName = 'Lab Issuing CA - LV'
+  CADistinguishedNameSuffix = 'O=PKI,L=Las Vegas,S=Nevada,C=US'
+  CAType = 'EnterpriseSubordinateCA'
+  CryptoProviderName = 'RSA#Microsoft Software Key Storage Provider'
+  HashAlgorithmName = 'SHA256'
+  KeyLength = 4096
+  DatabaseDirectory = 'C:\\pkidata'
+  OutputCertRequestFile = 'C:\\pkidata\\lab_issuing_lv.req'
+}
+Install-AdcsCertificationAuthority @vCaIssProperties -Force -OverwriteExistingKey
+```
+
+#### 6.0.4 Approve and Install LV SubCA Certificate
+
+Repeat the same process on the Root CA for the LV request file:
+
+```powershell
+certreq -submit C:\\pkidata\\lab_issuing_lv.req C:\\pkidata\\lab_issuing_lv.cer
+certutil -getrequests
+certutil -approve <RequestID>
+certutil -retrieve <RequestID> C:\\pkidata\\lab_issuing_lv.cer
+```
+
+Copy and install the certificate back on `lvsubca1`, then start the CA service.
+
+---
+
+### 6.1 Core Configuration (Both TX and LV)
+
+Run the following on **both txsubca1 and lvsubca1**:
 
 ```powershell
 certutil -setreg CA\\ValidityPeriodUnits 1
@@ -247,18 +354,182 @@ Get-CACrlDistributionPoint | ForEach-Object { Remove-CACrlDistributionPoint $_.U
 Get-CAAuthorityInformationAccess | Where-Object { $_.Uri -match '^(ldap|file)' } | Remove-CAAuthorityInformationAccess -Force
 
 # Add CRL Paths
-Add-CACRLDistributionPoint -Uri 'C:\\Windows\\System32\\CertSrv\\CertEnroll\\%3%8.crl' -PublishToServer -Force
-Add-CACRLDistributionPoint -Uri '\\\\lab.local\\share\\PKIData\\%3%8.crl' -PublishToServer -Force
+Add-CACRLDistributionPoint -Uri 'C:\Windows\System32\CertSrv\CertEnroll\%3%8.crl' -PublishToServer -Force
+Add-CACRLDistributionPoint -Uri '\\lab.local\share\PKIData\%3%8.crl' -PublishToServer -Force
 Add-CACRLDistributionPoint -Uri 'http://pki.lab.local/pkidata/%3%8.crl' -AddToCertificateCDP -Force
 
 # Add AIA + OCSP
-certutil -setreg CA\\CACertPublicationURLs "1:C:\\Windows\\System32\\CertSrv\\CertEnroll\\%3%4.crt\n2:\\\\lab.local\\share\\PKIData\\%3%4.crt"
+certutil -setreg CA\\CACertPublicationURLs "1:C:\Windows\System32\CertSrv\CertEnroll\%3%4.crt\n2:\\lab.local\share\PKIData\%3%4.crt"
 Add-CAAuthorityInformationAccess -AddToCertificateAia 'http://pki.lab.local/pkidata/%3%4.crt' -Force
 Add-CAAuthorityInformationAccess -AddToCertificateOcsp 'http://ocsp.lab.local/ocsp' -Force
 
 Restart-Service certsvc
+Start-Sleep -Seconds 2
 certutil -crl
+
+Rename-Item "C:\Windows\System32\CertSrv\CertEnroll\txsubca1.lab.local_Lab Issuing CA - TX.crt" "Lab Issuing CA - TX.crt"
+explorer C:\windows\System32\CertSrv\CertEnroll
 ```
+## Publish Issuing CA - FL to AD
+```powershell
+$cer = Get-ChildItem 'C:\Windows\System32\CertSrv\CertEnroll' -Filter '*Lab Issuing CA - tx*.crt' | Select-Object -First 1
+certutil -dspublish -f "$($cer.FullName)" NTAuthCA
+certutil -dspublish -f "$($cer.FullName)" SubCA
+```
+---
+
+### 6.2 Certificate Templates Configuration
+
+### Overview
+Templates control what certificates can be issued, who can request them, and how they're used. The following templates must be created or duplicated from built‑ins:
+
+| Template | Based On | Purpose | Autoenrollment | Publish to AD |
+|----|----|----|----|----|
+| **Web Server (PKI‑Web)** | Web Server | IIS and HTTPS endpoints | Yes | Yes |
+| **OCSP Responder (PKI‑OCSP)** | OCSP Response Signing | OCSP role signing certs | No | No |
+| **Domain Controller Authentication (PKI‑DCAuth)** | Domain Controller Authentication | DC authentication, smart card logon | Yes | Yes |
+| **LDAPS (PKI‑LDAPS)** | Computer | Secure LDAP over TLS | Yes | Yes |
+
+### Steps (on an Issuing CA)
+
+```powershell
+certtmpl.msc
+```
+
+1. **Duplicate Template → Web Server**
+   - General tab: *PKI‑WebServer*
+   - Security tab: add `Domain Computers`, `PKI Web Servers`, and `OCSP Servers` with **Enroll** and **Autoenroll** permissions.
+   - Subject Name: "Build from Active Directory Information".
+   - Extensions → Application Policies: ensure **Server Authentication**.
+
+2. **Duplicate Template → OCSP Response Signing**
+   - General: *PKI‑OCSP*
+   - Security: assign `OCSP Servers` **Enroll** rights.
+   - Extensions: Application Policies → **OCSP Signing** only.
+   - Uncheck "Publish certificate in Active Directory".
+
+3. **Duplicate Template → Domain Controller Authentication**
+   - Name: *PKI‑DCAuth*
+   - Retain default "Domain Controllers" security with Auto‑Enrollment.
+   - Validity = 2 years, Renewal = 6 weeks.
+
+4. **Duplicate Template → LDAPS / Secure LDAP**
+   - Name: *PKI‑LDAPS*
+   - Based on *Computer* template.
+   - Application Policies → **Server Authentication** + optionally **Client Authentication**.
+   - Security: add `Domain Controllers`, `Domain Computers` with Enroll/Autoenroll.
+
+5. **Publish templates:**
+   ```powershell
+   certutil -setcatemplates +PKI-WebServer,+PKI-OCSP,+PKI-DCAuth,+PKI-LDAPS
+   ```
+
+---
+
+### 6.3 Certificate Services & OCSP Role Installation
+
+#### On Each **Web Server** (`txweb1`, `lvweb1`)
+
+```powershell
+Install-WindowsFeature ADCS-Web-Enrollment -IncludeManagementTools
+Install-AdcsWebEnrollment -Confirm:$false
+```
+
+> 💡 If you need the web servers to also act as issuing CAs (not recommended for production), use:
+> ```powershell
+> Install-WindowsFeature ADCS-Cert-Authority, ADCS-Web-Enrollment -IncludeManagementTools
+> Install-AdcsCertificationAuthority -CAType EnterpriseSubordinateCA -CACommonName "WebServer CA" -CryptoProviderName "RSA#Microsoft Software Key Storage Provider" -KeyLength 2048 -HashAlgorithmName SHA256 -ValidityPeriod Years -ValidityPeriodUnits 5
+> ```
+
+#### On Each **OCSP Server** (`txocsp`, `lvocsp`)
+
+**For txocsp (pointing to TX Issuing CA):**
+
+```powershell
+Install-WindowsFeature ADCS-Online-Cert -IncludeManagementTools
+Install-AdcsOnlineResponder -Confirm:$false
+```
+
+Configure the OCSP responder to use the TX issuing CA:
+
+```powershell
+# Open OCSP console and add revocation configuration pointing to:
+# CA: txsubca1.lab.local\Lab Issuing CA - TX
+```
+
+**For lvocsp (pointing to LV Issuing CA):**
+
+```powershell
+Install-WindowsFeature ADCS-Online-Cert -IncludeManagementTools
+Install-AdcsOnlineResponder -Confirm:$false
+```
+
+Configure the OCSP responder to use the LV issuing CA:
+
+```powershell
+# Open OCSP console and add revocation configuration pointing to:
+# CA: lvsubca1.lab.local\Lab Issuing CA - LV
+```
+
+#### Grant Enrollment Rights
+
+Ensure each OCSP server has permission to enroll the *PKI‑OCSP* template:
+
+```powershell
+# Create OCSP Servers group if not exists
+New-ADGroup -Name 'OCSP Servers' -GroupScope Global -GroupCategory Security
+Add-ADGroupMember -Identity 'OCSP Servers' -Members 'txocsp$', 'lvocsp$'
+
+# On the issuing CA, ensure template is published
+certutil -setcatemplates +PKI-OCSP
+```
+
+#### Request OCSP Signing Certificates
+
+On each OCSP server, request an OCSP signing certificate:
+
+```powershell
+# Create request
+certreq -new -f ocsp_request.inf ocsp.req
+
+# Submit to CA (replace with your CA name)
+certreq -submit -config "txsubca1.lab.local\Lab Issuing CA - TX" -attrib "CertificateTemplate:PKI-OCSP" ocsp.req ocsp.cer
+
+# Install certificate
+certreq -accept ocsp.cer
+```
+
+Sample `ocsp_request.inf`:
+
+```ini
+[NewRequest]
+Subject = "CN=OCSP Signing Certificate"
+KeyLength = 2048
+Exportable = FALSE
+MachineKeySet = TRUE
+ProviderName = "Microsoft RSA SChannel Cryptographic Provider"
+RequestType = PKCS10
+KeyUsage = 0x80
+
+[EnhancedKeyUsageExtension]
+OID=1.3.6.1.5.5.7.3.9
+```
+
+---
+
+### 6.4 Testing Template Deployment
+
+- From a web server:  
+  ```powershell
+  certutil -pulse
+  certreq -submit -attrib "CertificateTemplate:PKI-WebServer" web.req
+  ```
+- From an OCSP server:  
+  ```powershell
+  certreq -submit -attrib "CertificateTemplate:PKI-OCSP" ocsp.req
+  ```
+
+Confirm issued certificates appear under `Issued Certificates` in CA console.
 
 ---
 
@@ -306,9 +577,9 @@ $crlOutput | Where-Object { $_ -match '^\\s+\\d+:\\s+\\d+:' } | ForEach-Object {
     $addToCertCDP = ($flags -band 0x02) -ne 0
 
     if ($url -match $expectedCDP_HTTP -and $addToCertCDP) {
-      Write-Host "CDP OK ✅ $url" -ForegroundColor Green
+    Write-Host "CDP OK ✅ $url" -ForegroundColor Green
     } elseif ($url -match 'ldap://|file://' -and $addToCertCDP) {
-      Write-Host "Legacy CDP embedded ❌ $url" -ForegroundColor Red
+    Write-Host "Legacy CDP embedded ❌ $url" -ForegroundColor Red
     }
   }
 }
@@ -323,13 +594,13 @@ $aiaOutput | Where-Object { $_ -match '^\\s+\\d+:\\s+\\d+:' } | ForEach-Object {
     $addToOCSP = ($flags -band 0x20) -ne 0
 
     if ($url -match $expectedAIA_HTTP -and $addToAIA) {
-      Write-Host "AIA OK ✅ $url" -ForegroundColor Green
+    Write-Host "AIA OK ✅ $url" -ForegroundColor Green
     } elseif ($url -match $expectedOCSP -and $addToOCSP) {
-      Write-Host "OCSP OK ✅ $url" -ForegroundColor Green
+    Write-Host "OCSP OK ✅ $url" -ForegroundColor Green
     } elseif ($url -match 'ocsp' -and $addToOCSP -and $url -notmatch $expectedOCSP) {
-      Write-Host "OCSP Wrong Domain ⚠️ $url (should be $expectedOCSP)" -ForegroundColor Yellow
+    Write-Host "OCSP Wrong Domain ⚠️ $url (should be $expectedOCSP)" -ForegroundColor Yellow
     } elseif ($url -match 'ldap://|file://' -and ($addToAIA -or $addToOCSP)) {
-      Write-Host "Legacy AIA/OCSP embedded ❌ $url" -ForegroundColor Red
+    Write-Host "Legacy AIA/OCSP embedded ❌ $url" -ForegroundColor Red
     }
   }
 }
@@ -351,5 +622,118 @@ Expected Output (All Green):
 - Replicate CRL/AIA files across both IIS web servers via DFS.
 - Back up the Root CA `.crt` and `.crl` securely offline.
 - Document each CRL renewal and Root CA publishing event.
+- Both issuing CAs (TX and LV) should be configured identically except for their common names and locations.
+- OCSP responders should point to their respective regional issuing CAs for optimal performance.
 
-✅ **Result:** Fully modern, Microsoft‑compliant, two‑tier PKI ready for production operations.
+✅ **Result:** Fully modern, Microsoft‑compliant, two‑tier PKI with redundant issuing CAs and OCSP responders ready for production operations.
+
+---
+
+## 🧩 Appendix A – Revoking an Issuing CA Certificate
+
+**Purpose:**  
+To invalidate a subordinate CA certificate (e.g. `Lab Issuing CA - TX`) when that CA is retired, compromised, or replaced by a renewal.
+
+---
+
+### A.1 Preconditions
+
+- Root CA is **offline**, but accessible for revocation and CRL publication.  
+- The certificate to revoke (e.g. *Lab Issuing CA - TX.cert*) is **present on the Root CA** under `C:\PKIData`.
+
+---
+
+### A.2 Identify the Subordinate Certificate on the Root CA
+
+Run the following on the **Offline Root CA**:
+
+```powershell
+certutil -view -restrict "Certificate Template=SubCA"
+```
+
+If you're unsure, list all issued CA certificates:
+
+```powershell
+certutil -view -restrict "Issued Common Name=Lab Issuing CA - TX"
+```
+
+Verify the **Serial Number** matches the one from the target SubCA certificate.
+
+---
+
+### A.3 Revoke the Issuing CA Certificate
+
+Use **certutil** to revoke by serial number (or RequestID):
+
+```powershell
+certutil -revoke <SerialNumber> "Key Compromise"
+```
+
+Common revocation reasons:
+- `KeyCompromise`
+- `CACompromise`
+- `CeaseOfOperation`
+- `Superseded`
+
+Example:
+```powershell
+certutil -revoke 4b2a "CeaseOfOperation"
+```
+
+---
+
+### A.4 Publish an Updated CRL
+
+After revoking the certificate, issue a fresh CRL:
+
+```powershell
+certutil -crl
+```
+
+Copy the Root CA's new `.crl` file to your PKI share:
+```powershell
+copy "C:\Windows\System32\CertSrv\CertEnroll\Lab Root CA.crl" "\\lab.local\share\pkidata\"
+```
+
+Then publish it to AD and web servers:
+```powershell
+certutil -dspublish -f "\\lab.local\share\pkidata\Lab Root CA.crl" "Lab Root CA"
+```
+
+---
+
+### A.5 Verify CRL Contains the Revoked SubCA
+
+Check that the revoked CA's serial number appears in the CRL:
+
+```powershell
+certutil -dump "Lab Root CA.crl" | findstr /i "<SerialNumber>"
+```
+
+A successful entry appears under the CRL's "Revoked Certificates" list.
+
+---
+
+### A.6 Notify Administrators & Dependents
+
+- Disable **CertSvc** on the revoked issuing CA:
+  ```powershell
+  Stop-Service certsvc
+  Set-Service certsvc -StartupType Disabled
+  ```
+- Remove DNS A records for `txsubca1` or `lvsubca1` if decommissioned.
+- Update AIA/CDP hosting (remove old public `.crt`).
+- Document the revocation reason and time.
+
+---
+
+### A.7 Optional – Replace the Revoked Issuing CA
+
+If replacing the CA (e.g., due to renewal or compromise):
+1. Deploy a new subordinate CA following **Section 6.0**.
+2. Update all dependent services (OCSP responders, IIS, templates).
+3. Validate using the **Deep PKI Validation Script** in Section 8.
+
+---
+
+**End of PKI Infrastructure Deployment Guide**
