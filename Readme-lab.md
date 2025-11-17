@@ -74,7 +74,7 @@ Ensures fast DNS failover between regions.
 ### Create Folder and Share
 
 ```powershell
-$folderPath = "C:\\PKIData"
+$folderPath = "C:\PKIData"
 if (-Not (Test-Path $folderPath)) { New-Item -Path $folderPath -ItemType Directory }
 
 $shareName = "PKIData"
@@ -87,71 +87,231 @@ if (-Not (Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue)) {
 
 ```powershell
 # Share Access
-Grant-SmbShareAccess -Name PKIData -AccountName "LAB\\txsubca1$" -AccessRight Change -Force
-Grant-SmbShareAccess -Name PKIData -AccountName "LAB\\lvsubca1$" -AccessRight Change -Force
-Grant-SmbShareAccess -Name PKIData -AccountName "LAB\\txweb1$" -AccessRight Read -Force
-Grant-SmbShareAccess -Name PKIData -AccountName "LAB\\lvweb1$" -AccessRight Read -Force
-Grant-SmbShareAccess -Name PKIData -AccountName "LAB\\txocsp$" -AccessRight Read -Force
-Grant-SmbShareAccess -Name PKIData -AccountName "LAB\\lvocsp$" -AccessRight Read -Force
+Grant-SmbShareAccess -Name PKIData -AccountName "LAB\subca1$" -AccessRight Change -Force
+Grant-SmbShareAccess -Name PKIData -AccountName "LAB\subca2$" -AccessRight Change -Force
+Grant-SmbShareAccess -Name PKIData -AccountName "LAB\web01$"  -AccessRight Read   -Force
+Grant-SmbShareAccess -Name PKIData -AccountName "LAB\web02$"  -AccessRight Read   -Force
+Grant-SmbShareAccess -Name PKIData -AccountName "LAB\ocsp1$"  -AccessRight Read   -Force
+Grant-SmbShareAccess -Name PKIData -AccountName "LAB\ocsp2$"  -AccessRight Read   -Force
 
 # NTFS Permissions
-icacls "C:\\PKIData" /grant "SYSTEM:(OI)(CI)F" /grant "Administrators:(OI)(CI)F" /T
-icacls "C:\\PKIData" /grant 'LAB\\txsubca1$:(OI)(CI)M' /T
-icacls "C:\\PKIData" /grant 'LAB\\lvsubca1$:(OI)(CI)M' /T
-icacls "C:\\PKIData" /grant 'LAB\\txweb1$:(OI)(CI)RX' /T
-icacls "C:\\PKIData" /grant 'LAB\\lvweb1$:(OI)(CI)RX' /T
-icacls "C:\\PKIData" /grant 'LAB\\txocsp$:(OI)(CI)RX' /T
-icacls "C:\\PKIData" /grant 'LAB\\lvocsp$:(OI)(CI)RX' /T
+icacls "C:\PKIData" /grant "SYSTEM:(OI)(CI)F" /grant "Administrators:(OI)(CI)F" /T
+icacls "C:\PKIData" /grant 'LAB\subca1$:(OI)(CI)M' /T
+icacls "C:\PKIData" /grant 'LAB\subca2$:(OI)(CI)M' /T
+icacls "C:\PKIData" /grant 'LAB\web01$:(OI)(CI)RX' /T
+icacls "C:\PKIData" /grant 'LAB\web02$:(OI)(CI)RX' /T
+icacls "C:\PKIData" /grant 'LAB\ocsp1$:(OI)(CI)RX' /T
+icacls "C:\PKIData" /grant 'LAB\ocsp2$:(OI)(CI)RX' /T
+
+Get-SmbShareAccess -Name PKIData | Format-Table AccountName, AccessRight -AutoSize
 ```
 
 ---
 
 ## 4. Web Server (IIS) Configuration
-
+Web servers: web01.lab.local and web02.lab.local
+PKI content path: \\lab.local\share\PKIData (DFS)
 ### 4.1 Install IIS
+Run on web01 and repeat on web02:
 
 ```powershell
 Install-WindowsFeature Web-Server, Web-Scripting-Tools -IncludeManagementTools
 ```
 
 ### 4.2 Create Service Account and Permissions
+### 4.2.1 Create service account and group (run on DC1 or DC2)
 
 ```powershell
 $pwd = Read-Host -Prompt 'Enter password for PKIWebSvc' -AsSecureString
-New-ADUser -Name 'PKIWebSvc' -SamAccountName 'PKIWebSvc' -AccountPassword $pwd -Enabled $true -PasswordNeverExpires $false
+
+New-ADUser -Name 'PKIWebSvc' `
+           -SamAccountName 'PKIWebSvc' `
+           -AccountPassword $pwd `
+           -Enabled $true `
+           -PasswordNeverExpires $false
 
 New-ADGroup -Name 'PKI Web Servers' -GroupScope Global -GroupCategory Security
 Add-ADGroupMember -Identity 'PKI Web Servers' -Members 'PKIWebSvc'
-
-Grant-SmbShareAccess -Name 'PKIData' -AccountName 'LAB\\PKIWebSvc' -AccessRight Change -Force
-icacls 'C:\\PKIData' /grant 'LAB\\PKIWebSvc:(OI)(CI)M' /T
 ```
 
-### 4.3 Configure IIS Application Pool
+Optional verification:
+```powershell
+Get-ADUser PKIWebSvc
+Get-ADGroup 'PKI Web Servers'
+Get-ADGroupMember 'PKI Web Servers'
+```
+
+### 4.2.2 Grant PKIWebSvc access to PKIData (run on File1 and File2)
+
+On file1:
+```powershell
+Grant-SmbShareAccess -Name 'PKIData' -AccountName 'LAB\PKIWebSvc' -AccessRight Change -Force
+icacls 'C:\PKIData' /grant 'LAB\PKIWebSvc:(OI)(CI)M' /T
+```
+Repeat the same commands on file2.
+```powershell
+Grant-SmbShareAccess -Name 'PKIData' -AccountName 'LAB\PKIWebSvc' -AccessRight Change -Force
+icacls 'C:\PKIData' /grant 'LAB\PKIWebSvc:(OI)(CI)M' /T
+```
+Optional verification:
+```powershell
+Get-SmbShareAccess -Name PKIData | Where-Object AccountName -match 'PKIWebSvc'
+icacls C:\PKIData | findstr /i PKIWebSvc
+```
+
+
+
+### 4.3 Configure IIS Application Pool Identity (web01 and web02)
+Set the DefaultAppPool to run as LAB\PKIWebSvc.
+
+Run on web01:
+```powershell
+Import-Module WebAdministration
+
+# Set identity type to SpecificUser (3)
+Set-ItemProperty "IIS:\AppPools\DefaultAppPool" -Name processModel.identityType -Value 3
+
+# Set service account and password
+Set-ItemProperty "IIS:\AppPools\DefaultAppPool" -Name processModel.userName -Value "LAB\PKIWebSvc"
+Set-ItemProperty "IIS:\AppPools\DefaultAppPool" -Name processModel.password -Value "<PKIWebSvc_password_here>"
+
+# Restart the app pool
+Restart-WebAppPool DefaultAppPool
+
+# Verify
+Get-Item "IIS:\AppPools\DefaultAppPool" | Select-Object -ExpandProperty processModel
+```
+Expected key values:
+
+identityType : SpecificUser
+userName     : LAB\PKIWebSvc
+Repeat the same block on web02.
+
+Run on web02:
+```powershell
+Import-Module WebAdministration
+
+# Set identity type to SpecificUser (3)
+Set-ItemProperty "IIS:\AppPools\DefaultAppPool" -Name processModel.identityType -Value 3
+
+# Set service account and password
+Set-ItemProperty "IIS:\AppPools\DefaultAppPool" -Name processModel.userName -Value "LAB\PKIWebSvc"
+Set-ItemProperty "IIS:\AppPools\DefaultAppPool" -Name processModel.password -Value "<PKIWebSvc_password_here>"
+
+# Restart the app pool
+Restart-WebAppPool DefaultAppPool
+
+# Verify
+Get-Item "IIS:\AppPools\DefaultAppPool" | Select-Object -ExpandProperty processModel
+```
+### 4.4 Create Virtual Directory for PKI Data (web01 and web02)
+Assumes a DFS namespace \\lab.local\share\PKIData.
+
+Run on web01:
+```powershell
+Import-Module WebAdministration
+
+# Remove if it already exists (no error if missing)
+Remove-WebVirtualDirectory -Site 'Default Web Site' -Name 'pkidata' -ErrorAction SilentlyContinue
+
+# Create virtual directory pointing to DFS path
+$vDirProperties = @{
+    Site         = 'Default Web Site'
+    Name         = 'pkidata'
+    PhysicalPath = '\\lab.local\share\PKIData'
+}
+New-WebVirtualDirectory @vDirProperties
+
+# Verify
+Get-WebVirtualDirectory -Site 'Default Web Site' -Name 'pkidata' | Select-Object physicalPath
+```
+Repeat on web02.
+```powershell
+Import-Module WebAdministration
+
+# Remove if it already exists (no error if missing)
+Remove-WebVirtualDirectory -Site 'Default Web Site' -Name 'pkidata' -ErrorAction SilentlyContinue
+
+# Create virtual directory pointing to DFS path
+$vDirProperties = @{
+    Site         = 'Default Web Site'
+    Name         = 'pkidata'
+    PhysicalPath = '\\lab.local\share\PKIData'
+}
+New-WebVirtualDirectory @vDirProperties
+
+# Verify
+Get-WebVirtualDirectory -Site 'Default Web Site' -Name 'pkidata' | Select-Object physicalPath
+```
+
+### 4.5 Enable Directory Browsing and MIME Types (web01 and web02)
+Run on web01:
 
 ```powershell
 Import-Module WebAdministration
-Set-ItemProperty IIS:\\AppPools\\DefaultAppPool -Name processModel -Value @{userName='LAB\\PKIWebSvc';password='<password>'}
-Restart-WebAppPool DefaultAppPool
+
+# Enable directory browsing on /pkidata
+Set-WebConfigurationProperty `
+    -Filter /system.webServer/directoryBrowse `
+    -Name enabled `
+    -Value true `
+    -PSPath "IIS:\Sites\Default Web Site\pkidata"
+
+# Allow double escaping (needed for some CRL/AIA paths)
+Set-WebConfigurationProperty `
+    -Filter /system.webServer/security/requestFiltering `
+    -Name allowDoubleEscaping `
+    -Value true `
+    -PSPath "IIS:\Sites\Default Web Site"
+
+# Add MIME types for CRL and CRT
+Add-WebConfigurationProperty -pspath 'IIS:' `
+    -filter "system.webServer/staticContent" `
+    -name "." `
+    -value @{fileExtension='.crl'; mimeType='application/pkix-crl'}
+
+Add-WebConfigurationProperty -pspath 'IIS:' `
+    -filter "system.webServer/staticContent" `
+    -name "." `
+    -value @{fileExtension='.crt'; mimeType='application/x-x509-ca-cert'}
 ```
-
-### 4.4 Create Virtual Directory for DFS Path
-
+Repeat on web02.
 ```powershell
-$vDirProperties = @{ Site = 'Default Web Site'; Name = 'pkidata'; PhysicalPath = '\\\\lab.local\\share\\PKIData' }
-New-WebVirtualDirectory @vDirProperties
+Import-Module WebAdministration
+
+# Enable directory browsing on /pkidata
+Set-WebConfigurationProperty `
+    -Filter /system.webServer/directoryBrowse `
+    -Name enabled `
+    -Value true `
+    -PSPath "IIS:\Sites\Default Web Site\pkidata"
+
+# Allow double escaping (needed for some CRL/AIA paths)
+Set-WebConfigurationProperty `
+    -Filter /system.webServer/security/requestFiltering `
+    -Name allowDoubleEscaping `
+    -Value true `
+    -PSPath "IIS:\Sites\Default Web Site"
+
+# Add MIME types for CRL and CRT
+Add-WebConfigurationProperty -pspath 'IIS:' `
+    -filter "system.webServer/staticContent" `
+    -name "." `
+    -value @{fileExtension='.crl'; mimeType='application/pkix-crl'}
+
+Add-WebConfigurationProperty -pspath 'IIS:' `
+    -filter "system.webServer/staticContent" `
+    -name "." `
+    -value @{fileExtension='.crt'; mimeType='application/x-x509-ca-cert'}
 ```
 
-### 4.5 Enable Directory Browsing and MIME Types
+## 4.6 Basic Test
+On web01:
 
-```powershell
-Set-WebConfigurationProperty -Filter /system.webServer/directoryBrowse -Name enabled -Value true -PSPath "IIS:\\Sites\\Default Web Site\\pkidata"
-Set-WebConfigurationProperty -Filter /system.webServer/security/requestFiltering -Name allowDoubleEscaping -Value true -PSPath "IIS:\\Sites\\Default Web Site"
+Browse to http://web01.lab.local/pkidata/
+On web02:
 
-Add-WebConfigurationProperty -pspath 'IIS:' -filter "system.webServer/staticContent" -name "." -value @{fileExtension='.crl'; mimeType='application/pkix-crl'}
-Add-WebConfigurationProperty -pspath 'IIS:' -filter "system.webServer/staticContent" -name "." -value @{fileExtension='.crt'; mimeType='application/x-x509-ca-cert'}
-```
-
+Browse to http://web02.lab.local/pkidata/
 ---
 
 ## 5. Offline Root CA Setup
