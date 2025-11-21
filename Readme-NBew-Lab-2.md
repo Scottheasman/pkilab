@@ -25,21 +25,21 @@ Modern, domain-integrated Public Key Infrastructure (PKI) for **lab.local** — 
 - HTTP (AIA/CDP): `http://pki.lab.local/pkidata/`  
 - OCSP: `http://ocsp.lab.local/ocsp`
 
-**DFS Share (for PKI Data):** `\\lab.local\\share\\PKIData`  
+**DFS Share (for PKI Data):** `\\lab.local\share\PKIData`  
 **NetBIOS name:** `LAB`
 
 ---
 
 ## 3. DFS and File Permissions (LAB Version)
 
-We host `C:\\PKIData` on **file1** and **file2** and expose it via DFS as `\\lab.local\\share\\PKIData`.
+We host `C:\PKIData` on **file1** and **file2** and expose it via DFS as `\\lab.local\share\PKIData`.
 
 ### 3.1 Create Folder and Share (File1 and File2)
 
 On **file1**:
 
 ```powershell
-$folderPath = "C:\\PKIData"
+$folderPath = "C:\PKIData"
 if (-Not (Test-Path $folderPath)) { New-Item -Path $folderPath -ItemType Directory }
 
 $shareName = "PKIData"
@@ -86,8 +86,8 @@ Repeat **exactly** the same on **file2**.
 ## 4. Web Server (IIS) Configuration (LAB Version)
 
 Web servers: **web01.lab.local**, **web02.lab.local**  
-PKI data via DFS: `\\lab.local\\share\\PKIData`  
-Service account: `LAB\\PKIWebSvc`
+PKI data via DFS: `\\lab.local\share\PKIData`  
+Service account: `LAB\PKIWebSvc`
 
 ### 4.1 Install IIS (web01 and web02)
 
@@ -120,14 +120,14 @@ On **file1**:
 
 ```powershell
 Grant-SmbShareAccess -Name 'PKIData' -AccountName 'LAB\PKIWebSvc' -AccessRight Change -Force
-icacls 'C:\\PKIData' /grant 'LAB\PKIWebSvc:(OI)(CI)M' /T
+icacls 'C:\PKIData' /grant 'LAB\PKIWebSvc:(OI)(CI)M' /T
 ```
 
 Repeat on **file2**.
 
 ### 4.3 Configure IIS Application Pool Identity (web01 & web02)
 
-Set **DefaultAppPool** to run as `LAB\\PKIWebSvc`.
+Set **DefaultAppPool** to run as `LAB\PKIWebSvc`.
 
 On **web01**:
 
@@ -155,7 +155,7 @@ Remove-WebVirtualDirectory -Site 'Default Web Site' -Name 'pkidata' -ErrorAction
 $vDirProperties = @{
     Site         = 'Default Web Site'
     Name         = 'pkidata'
-    PhysicalPath = '\\lab.local\\share\\PKIData'
+    PhysicalPath = '\\lab.local\share\PKIData'
 }
 New-WebVirtualDirectory @vDirProperties
 ```
@@ -287,7 +287,7 @@ Rename-Item "C:\Windows\System32\CertSrv\CertEnroll\caroot1.lab.local_Lab Root C
 explorer.exe "C:\Windows\System32\CertSrv\CertEnroll"
 ```
 
-Copy these from **caroot1** to `\\lab.local\\share\\PKIData`:
+Copy these from **caroot1** to `\\lab.local\share\PKIData`:
 
 - `Lab Root CA.crt`
 - `Lab Root CA.crl`
@@ -295,8 +295,8 @@ Copy these from **caroot1** to `\\lab.local\\share\\PKIData`:
 Then publish to AD:
 
 ```powershell
-certutil -dspublish -f "\\lab.local\\share\\PKIData\\Lab Root CA.crt" RootCA
-certutil -dspublish -f "\\lab.local\\share\\PKIData\\Lab Root CA.crl" "Lab Root CA"
+certutil -dspublish -f "\\lab.local\share\PKIData\Lab Root CA.crt" RootCA
+certutil -dspublish -f "\\lab.local\share\PKIData\Lab Root CA.crl" "Lab Root CA"
 ```
 
 ---
@@ -334,6 +334,9 @@ $vCaIssProperties = @{
   OutputCertRequestFile     = 'C:\PKIData\lab_issuing_site1.req'
 }
 Install-AdcsCertificationAuthority @vCaIssProperties -Force -OverwriteExistingKey
+explorer c:\pkidata
+
+copy "lab_issuing_site1.req" to caroot1 c:\pkidata (make a new dir)
 ```
 
 ### 6.0.2 Approve and Install SubCA1 Certificate (caroot1)
@@ -341,10 +344,9 @@ Install-AdcsCertificationAuthority @vCaIssProperties -Force -OverwriteExistingKe
 On **caroot1**:
 
 ```powershell
-certreq -submit C:\PKIData\lab_issuing_site1.req C:\PKIData\lab_issuing_site1.cer
-certutil -getrequests
-certutil -approve <RequestID>
-certutil -retrieve <RequestID> C:\PKIData\lab_issuing_site1.cer
+certreq -submit  C:\PKIData\lab_issuing_site1.req  C:\PKIData\lab_issuing_site1.cer
+certutil -resubmit 2
+certreq -retrieve 2 C:\PKIData\lab_issuing_site1.cer
 ```
 
 Copy `lab_issuing_site1.cer` back to **subca1**, install via CA MMC (Install CA Certificate), then:
@@ -412,10 +414,10 @@ Get-CACrlDistributionPoint | ForEach-Object { Remove-CACrlDistributionPoint $_.U
 Get-CAAuthorityInformationAccess | Where-Object { $_.Uri -match '^(ldap|file)' } | Remove-CAAuthorityInformationAccess -Force
 
 Add-CACRLDistributionPoint -Uri 'C:\Windows\System32\CertSrv\CertEnroll\%3%8.crl' -PublishToServer -Force
-Add-CACRLDistributionPoint -Uri '\\lab.local\\share\\PKIData\%3%8.crl' -PublishToServer -Force
+Add-CACRLDistributionPoint -Uri '\\lab.local\share\PKIData\%3%8.crl' -PublishToServer -Force
 Add-CACRLDistributionPoint -Uri 'http://pki.lab.local/pkidata/%3%8.crl' -AddToCertificateCDP -Force
 
-certutil -setreg CA\CACertPublicationURLs "1:C:\Windows\System32\CertSrv\CertEnroll\%3%4.crt\n2:\\lab.local\\share\\PKIData\%3%4.crt"
+certutil -setreg CA\CACertPublicationURLs "1:C:\Windows\System32\CertSrv\CertEnroll\%3%4.crt\n2:\\lab.local\share\PKIData\%3%4.crt"
 Add-CAAuthorityInformationAccess -AddToCertificateAia 'http://pki.lab.local/pkidata/%3%4.crt' -Force
 Add-CAAuthorityInformationAccess -AddToCertificateOcsp 'http://ocsp.lab.local/ocsp' -Force
 
