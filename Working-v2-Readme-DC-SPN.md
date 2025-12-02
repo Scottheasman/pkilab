@@ -1,6 +1,6 @@
 # Why Service Principal Names (SPNs) are Essential for Our PKI Web Solution (Secure & Best Practice)
 
-#### 1 Summary
+### 1 Summary
 
 ```text   
 Service Principal Names (SPNs) are critical identifiers used by the Kerberos authentication protocol to uniquely identify service instances in an Active Directory domain. In our PKI web solution, SPNs are fundamental for enabling secure and seamless Kerberos authentication for clients accessing our web services (e.g., /certsrv for certificate enrollment).
@@ -8,7 +8,7 @@ Service Principal Names (SPNs) are critical identifiers used by the Kerberos aut
 Here's a breakdown of why SPNs are needed, highlighting their role in security and best practices:
 ```
 
-#### 2 Enabling Secure Kerberos Authentication (Best Practice):
+#### 1.2 Enabling Secure Kerberos Authentication (Best Practice):
 
 ```text    
 When a client attempts to access a web service (like http://req.lab.local/certsrv), it requests a Kerberos ticket from the Key Distribution Center (KDC – typically a Domain Controller).
@@ -18,20 +18,20 @@ Best Practice: Kerberos is the preferred authentication protocol in Active Direc
 Without a correctly registered SPN, the KDC cannot locate the service account associated with that service, and thus cannot issue a Kerberos ticket. This forces clients to fall back to less secure authentication methods (like NTLM) or results in authentication failures.
 ```
 
-#### 3 Mapping Service to Account (Security & Best Practice):
+#### 1.3 Mapping Service to Account (Security & Best Practice):
 
 ```text   
 An SPN acts as a unique alias that maps a specific service instance (e.g., the HTTP service running on req.lab.local) to the Active Directory account under which that service is running (e.g., LAB\PKIWebSvc).
 This mapping is crucial for the KDC to know which account's credentials to use when encrypting the Kerberos ticket for the service.
 ```
 
-#### 4 Security:
+#### 1.4 Security:
 
 ```text   
 By explicitly linking a service to a specific account via an SPN, we ensure that only the legitimate service account can decrypt the Kerberos ticket, preventing unauthorized entities from impersonating the service.
 ```
 
-#### 5 Best Practice:
+#### 1.5 Best Practice:
 
 ```text   
 This explicit mapping helps enforce the principle of least privilege, as the service's identity is clearly defined.
@@ -58,21 +58,17 @@ For the PKIWebSvc account to successfully perform delegation (e.g., to request c
 Security & Best Practice: SPNs are foundational for implementing secure delegation mechanisms like RBCD, which allow services to act on behalf of users without exposing their credentials, thereby maintaining a strong security posture.
 ```
 
-#### 6 Summary:
+#### 1.6 Summary:
 
 ```text   
 SPNs are the cornerstone of Kerberos authentication for our web services. They ensure that clients can securely and efficiently authenticate to our PKI web solution using the robust Kerberos protocol, which is a fundamental requirement for a secure and functional enterprise PKI. Their correct implementation is a critical security best practice that enhances the overall integrity and confidentiality of our authentication processes.
 ```
 
+### 2 Validaiton
 
-
-
-
-
-
-
-
-
+```text   
+Run this from DC (or any domain joined host)
+```   
 
 ```powershell
 setspn -L LAB\PKIWebSvc
