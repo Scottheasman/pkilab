@@ -385,6 +385,329 @@ The configuration is represented in the following diagrams
 <img title="a title" alt="Alt text" src="PKILab-3-DFS-Config6.jpg">    
 
 <img title="a title" alt="Alt text" src="PKILab-3-DFS-Config7.jpg">    
+```
+
+## 4 Web Server
+### 4.1 pki.lab.local/pkidata
+
+```text
+This script will configure a dedicated IIS site for use with pki.lab.local/pkidata
+```
 
 
+```powershell
+<#
+.SYNOPSIS
+  Configures a dedicated IIS site for PKI HTTP (/pkidata) publishing (CDP/AIA).
+  - Creates a new IIS site bound to pki.lab.local.
+  - Creates /pkidata application under this site, pointing to the DFS share.
+  - Configures application pool, authentication, and MIME types.
+  - Plain-text password prompt for LAB\PKIWebSvc (temporary).
+  - Run elevated. Use -Verbose. Logs to %ProgramData%\PKI-Logs.
+#>
 
+param()
+
+# Ensure elevated
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Error "Run this script elevated (Run as Administrator)." ; exit 1
+}
+
+# Start transcript/log
+$logDir = Join-Path $env:ProgramData "PKI-Logs"
+if (-not (Test-Path $logDir)) { New-Item -Path $logDir -ItemType Directory -Force | Out-Null }
+$timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+$logFile = Join-Path $logDir "PKIData-Setup-${env:COMPUTERNAME}-${timestamp}.log"
+Start-Transcript -Path $logFile -Force
+Write-Verbose "Transcript started: ${logFile}"
+
+# CONFIG
+$DomainNetBios    = "LAB"
+$DfsRoot          = "\\lab.local\share"
+$PkiFolderName    = "PKIData"
+$DfsPkiPath       = Join-Path $DfsRoot $PkiFolderName
+$PkiHttpHost      = "pki.lab.local"
+$PKIHttpPool      = "PKIHttpPool"
+$PkiWebSvcAccount = "PKIWebSvc"
+$serviceAccount   = "${DomainNetBios}\${PkiWebSvcAccount}"
+
+# New site specific variables
+$PKIDataSiteName  = "PKIDataSite"
+$PKIDataSiteRoot  = "C:\InetPub\PKIDataSiteRoot" # Placeholder physical path for the site root
+
+# Prompt for plain-text password (temporary plaintext)
+Write-Host "Enter plain-text password for ${serviceAccount} (will be used to set IIS app pool identity)." -ForegroundColor Yellow
+$passwordPlain = Read-Host -Prompt "Password (plain text)"
+
+# Required features
+$requiredFeatures = @(
+    "Web-Server",
+    "Web-Static-Content",
+    "Web-Default-Doc",
+    "Web-ISAPI-Ext",
+    "Web-ISAPI-Filter",
+    "Web-Scripting-Tools"
+)
+
+foreach ($feature in $requiredFeatures) {
+    try {
+        $status = Get-WindowsFeature -Name $feature -ErrorAction Stop
+        if (-not $status.Installed) {
+            Write-Verbose "Installing feature: ${feature}"
+            Install-WindowsFeature -Name $feature -IncludeManagementTools -ErrorAction Stop | Out-Null
+            Write-Host "Installed feature: ${feature}" -ForegroundColor Green
+        } else {
+            Write-Verbose "Feature already installed: ${feature}"
+        }
+    } catch {
+        Write-Warning "Could not query/install feature ${feature}: $($_.Exception.Message)"
+    }
+}
+
+# Import IIS module
+Import-Module WebAdministration -ErrorAction Stop
+
+try {
+    # 1) Create PKIHttpPool and set identity
+    if (-not (Test-Path "IIS:\AppPools\${PKIHttpPool}")) {
+        New-WebAppPool -Name $PKIHttpPool | Out-Null
+        Write-Verbose "Created app pool ${PKIHttpPool}"
+    }
+    Set-ItemProperty "IIS:\AppPools\${PKIHttpPool}" -Name processModel.identityType -Value 3
+    Set-ItemProperty "IIS:\AppPools\${PKIHttpPool}" -Name processModel.userName -Value $serviceAccount
+    Set-ItemProperty "IIS:\AppPools\${PKIHttpPool}" -Name processModel.password -Value $passwordPlain
+    Restart-WebAppPool $PKIHttpPool
+    Write-Host "Configured app pool ${PKIHttpPool} to run as ${serviceAccount}" -ForegroundColor Green
+
+    # 2) Create PKIDataSite
+    Write-Host "Creating dedicated IIS site: ${PKIDataSiteName} bound to ${PkiHttpHost}" -ForegroundColor Cyan
+    if (-not (Test-Path $PKIDataSiteRoot)) { New-Item -Path $PKIDataSiteRoot -ItemType Directory -Force | Out-Null; Write-Verbose "Created ${PKIDataSiteRoot}" }
+
+    $pkiDataSite = Get-Website -Name $PKIDataSiteName -ErrorAction SilentlyContinue
+    if (-not $pkiDataSite) {
+        New-Website -Name $PKIDataSiteName -Port 80 -HostHeader $PkiHttpHost -PhysicalPath $PKIDataSiteRoot -ApplicationPool $PKIHttpPool
+        Write-Host "Created site ${PKIDataSiteName} with HTTP binding for ${PkiHttpHost}" -ForegroundColor Green
+    } else {
+        Write-Verbose "Site ${PKIDataSiteName} already exists."
+        # Ensure the site is using the correct app pool
+        Set-ItemProperty "IIS:\Sites\${PKIDataSiteName}" -Name applicationPool -Value $PKIHttpPool
+        Write-Verbose "Set application pool for ${PKIDataSiteName} to ${PKIHttpPool}"
+        # Ensure HTTP binding exists
+        if (-not (Get-WebBinding -Name $PKIDataSiteName -Protocol http -HostHeader $PkiHttpHost -ErrorAction SilentlyContinue)) {
+            New-WebBinding -Name $PKIDataSiteName -Protocol http -Port 80 -HostHeader $PkiHttpHost
+            Write-Host "Added HTTP binding for ${PkiHttpHost} to ${PKIDataSiteName}" -ForegroundColor Green
+        }
+    }
+    Start-Website $PKIDataSiteName
+
+    # 3) Create /pkidata application under the new site, pointing to DFS
+    Write-Host "Configuring /pkidata application under ${PKIDataSiteName}..." -ForegroundColor Cyan
+    if (-not (Test-Path $DfsPkiPath)) {
+        Write-Warning "DFS path ${DfsPkiPath} not reachable. Check network/permissions for ${serviceAccount}."
+    }
+
+    $pkiApp = Get-WebApplication -Site $PKIDataSiteName -Name "pkidata" -ErrorAction SilentlyContinue
+    if (-not $pkiApp) {
+        New-WebApplication -Site $PKIDataSiteName -Name "pkidata" -PhysicalPath $DfsPkiPath -ApplicationPool $PKIHttpPool
+        Write-Host "Created application ${PKIDataSiteName}/pkidata -> ${DfsPkiPath} using ${PKIHttpPool}" -ForegroundColor Green
+    } else {
+        Set-WebApplication -Site $PKIDataSiteName -Name "pkidata" -PhysicalPath $DfsPkiPath -ApplicationPool $PKIHttpPool
+        Write-Verbose "Ensured application ${PKIDataSiteName}/pkidata uses ${PKIHttpPool} and points to ${DfsPkiPath}"
+    }
+
+    # 4) Configure authentication and directory browsing for /pkidata (anonymous enabled)
+    # These settings are now applied specifically to the /pkidata application under PKIDataSite
+    Set-WebConfiguration -Filter /system.webServer/security/authentication/anonymousAuthentication -PSPath "MACHINE/WEBROOT/APPHOST" -Metadata overrideMode -Value Allow -ErrorAction SilentlyContinue
+    Set-WebConfiguration -Filter /system.webServer/security/authentication/windowsAuthentication -PSPath "MACHINE/WEBROOT/APPHOST" -Metadata overrideMode -Value Allow -ErrorAction SilentlyContinue
+
+    Set-WebConfigurationProperty -PSPath "IIS:\Sites\${PKIDataSiteName}\pkidata" -Filter /system.webServer/security/authentication/anonymousAuthentication -Name enabled -Value $true
+    Set-WebConfigurationProperty -PSPath "IIS:\Sites\${PKIDataSiteName}\pkidata" -Filter /system.webServer/security/authentication/anonymousAuthentication -Name userName -Value ""
+    Set-WebConfigurationProperty -PSPath "IIS:\Sites\${PKIDataSiteName}\pkidata" -Filter /system.webServer/security/authentication/windowsAuthentication -Name enabled -Value $false
+
+    Set-WebConfigurationProperty -PSPath "IIS:\Sites\${PKIDataSiteName}\pkidata" -Filter /system.webServer/directoryBrowse -Name enabled -Value $true
+    Set-WebConfigurationProperty -PSPath "IIS:\Sites\${PKIDataSiteName}" -Filter /system.webServer/security/requestFiltering -Name allowDoubleEscaping -Value $true # Apply to the site
+
+    # 5) Ensure mime types for crl/crt
+    function Ensure-MimeType {
+        param([string]$Extension,[string]$MimeType)
+        $existing = Get-WebConfigurationProperty -pspath 'IIS:\' -filter 'system.webServer/staticContent/mimeMap' -name '.' |
+            Where-Object { $_.fileExtension -eq $Extension }
+        if (-not $existing) {
+            Add-WebConfigurationProperty -pspath 'IIS:\' -filter 'system.webServer/staticContent' -name '.' -value @{ fileExtension = $Extension; mimeType = $MimeType }
+            Write-Verbose "Added mime type ${Extension} -> ${MimeType}"
+        } else {
+            Write-Verbose "Mime type for ${Extension} already exists"
+        }
+    }
+    Ensure-MimeType -Extension '.crl' -MimeType 'application/pkix-crl'
+    Ensure-MimeType -Extension '.crt' -MimeType 'application/x-x509-ca-cert'
+
+    # Restart relevant pools and IIS to ensure changes take effect
+    Restart-WebAppPool $PKIHttpPool
+    Write-Host "`n[INFO] PKI HTTP (${PKIDataSiteName}/pkidata) configuration complete." -ForegroundColor Green
+
+} catch {
+    Write-Error "Error configuring PKI HTTP: $($_.Exception.Message)"
+    throw
+} finally {
+    # Clear plaintext password variable from memory (best-effort)
+    $passwordPlain = $null
+    Stop-Transcript | Out-Null
+}
+```
+
+### 4.2 pki.lab.local/pkidata Output
+
+<img title="a title" alt="Alt text" src="PKILab-4-IIS-PKIData-Output1.jpg">    
+
+<img title="a title" alt="Alt text" src="PKILab-4-IIS-PKIData-Output2.jpg">    
+
+
+## 5 Root CA
+### 5.1 Rooot CA initial Install
+
+```powershell
+
+### RUN THIS ENTIRE SCRIPT ON THE OFFLINE ROOT CA SERVER (elevated PowerShell)
+### This script configures the CA and generates the cert/CRL.
+### Manual steps are required afterward to move files and publish to AD.
+
+### 1 - Common Variables
+$DomainFqdn    = "lab.local"
+$PkiHttpHost   = "pki.lab.local"
+$RootCAName    = "Lab Root CA"
+
+# Derived
+$PkiHttpBase   = "http://$PkiHttpHost/pkidata"
+$CertEnrollDir = "C:\Windows\System32\CertSrv\CertEnroll"
+
+### 2 - Create CAPolicy.inf
+Write-Host "Creating CAPolicy.inf..." -ForegroundColor Cyan
+$caPolicyContent = @"
+[Version]
+Signature=`$Windows NT`$
+
+[PolicyStatementExtension]
+Policies=InternalPolicy
+
+[InternalPolicy]
+OID=1.2.3.4.1455.67.89.5
+Notice="Legal Policy Statement"
+URL=$PkiHttpBase/cps.html
+
+[Certsrv_Server]
+RenewalKeyLength=4096
+RenewalValidityPeriod=Years
+RenewalValidityPeriodUnits=20
+LoadDefaultTemplates=0
+AlternateSignatureAlgorithm=0
+"@
+Set-Content -Path C:\Windows\CAPolicy.inf -Value $caPolicyContent -Force
+Write-Host "CAPolicy.inf created successfully." -ForegroundColor Green
+
+### 3 - Install AD CS Role and Configure Root CA
+Write-Host "Installing ADCS-Cert-Authority feature..." -ForegroundColor Cyan
+Install-WindowsFeature ADCS-Cert-Authority -IncludeManagementTools
+
+Write-Host "Configuring Standalone Root CA..." -ForegroundColor Cyan
+$vCaRootProperties = @{
+  CACommonName              = $RootCAName
+  CADistinguishedNameSuffix = 'O=Lab,L=Fort Lauderdale,S=Florida,C=US'
+  CAType                    = 'StandaloneRootCA'
+  CryptoProviderName        = 'RSA#Microsoft Software Key Storage Provider'
+  HashAlgorithmName         = 'SHA256'
+  KeyLength                 = 4096
+  ValidityPeriod            = 'Years'
+  ValidityPeriodUnits       = 20
+}
+Install-AdcsCertificationAuthority @vCaRootProperties -Force
+Write-Host "Root CA installed and configured." -ForegroundColor Green
+
+### 4 - Configure Validity and CRL Settings
+Write-Host "Setting CA validity, CRL periods, and audit filter..." -ForegroundColor Cyan
+certutil -setreg CA\ValidityPeriodUnits 10
+certutil -setreg CA\ValidityPeriod "Years"
+certutil -setreg CA\CRLPeriodUnits 1
+certutil -setreg CA\CRLPeriod "Years"
+certutil -setreg CA\CRLDeltaPeriodUnits 0
+certutil -setreg CA\CRLOverlapPeriodUnits 7
+certutil -setreg CA\CRLOverlapPeriod "Days"
+certutil -setreg CA\AuditFilter 127
+Restart-Service certsvc
+Write-Host "CA settings configured and service restarted." -ForegroundColor Green
+
+### 5 - Configure CDP and AIA locations
+Write-Host "Configuring CDP and AIA locations..." -ForegroundColor Cyan
+Import-Module ADCSAdministration
+
+# ---- CDP (CRL Distribution Points) ----
+Write-Host "  Setting CDP locations..." -ForegroundColor Gray
+$crllist = Get-CACrlDistributionPoint
+foreach ($crl in $crllist) { Remove-CACrlDistributionPoint $crl.Uri -Force }
+Add-CACRLDistributionPoint -Uri "$CertEnrollDir\%3%8.crl" -PublishToServer -PublishDeltaToServer -Force
+Add-CACRLDistributionPoint -Uri "$PkiHttpBase/%3%8.crl" -AddToCertificateCDP -AddToFreshestCrl -Force
+
+# ---- AIA (Authority Information Access) ----
+Write-Host "  Setting AIA locations..." -ForegroundColor Gray
+Get-CAAuthorityInformationAccess | Where-Object { $_.Uri -like '*ldap*' -or $_.Uri -like '*http*' -or $_.Uri -like '*file*' -or $_.Uri -like '\\*' } | Remove-CAAuthorityInformationAccess -Force
+certutil -setreg CA\CACertPublicationURLs "1:$CertEnrollDir\%3%4.crt"
+Add-CAAuthorityInformationAccess -Uri "$PkiHttpBase/%3%4.crt" -AddToCertificateAia -Force
+
+Restart-Service certsvc
+Write-Host "CDP and AIA configured, service restarted." -ForegroundColor Green
+
+### 6 - Finalize and Prepare for Manual Steps
+Write-Host "Publishing initial CRL and renaming certificate file..." -ForegroundColor Cyan
+certutil -CRL
+Start-Sleep -Seconds 2
+Rename-Item "$CertEnrollDir\caroot1_$RootCAName.crt" "$CertEnrollDir\$RootCAName.crt" -Force
+Write-Host "Initial CRL published and certificate renamed." -ForegroundColor Green
+
+# --- MANUAL STEPS FOR OFFLINE ROOT ---
+Write-Host "`n`n=====================================================================================================" -ForegroundColor Red
+Write-Host "                             *** MANUAL STEPS REQUIRED ***" -ForegroundColor Red
+Write-Host "=====================================================================================================" -ForegroundColor Red
+Write-Host "The Root CA is now configured. The following manual steps are CRITICAL:" -ForegroundColor Yellow
+Write-Host "-----------------------------------------------------------------------------------------------------" -ForegroundColor Yellow
+Write-Host "1. MANUALLY COPY FILES FROM ROOT CA:" -ForegroundColor Cyan
+Write-Host "   Location: C:\Windows\System32\CertSrv\CertEnroll\" -ForegroundColor Gray
+Write-Host "   Files to Copy:" -ForegroundColor Gray
+Write-Host "     - ${RootCAName}.crt" -ForegroundColor Gray
+Write-Host "     - ${RootCAName}.crl" -ForegroundColor Gray
+Write-Host "   Action: Copy these files to a removable media (e.g., USB drive)." -ForegroundColor Gray
+Write-Host "-----------------------------------------------------------------------------------------------------" -ForegroundColor Yellow
+Write-Host "2. TRANSFER FILES TO A DOMAIN-JOINED MACHINE:" -ForegroundColor Cyan
+Write-Host "   Action: Take the media to a domain-joined machine (e.g., DC, SubCA, or WEB server)." -ForegroundColor Gray
+Write-Host "   Destination: \\${DomainFqdn}\share\PKIData\" -ForegroundColor Gray
+Write-Host "   Action: Paste the .crt and .crl files into the above DFS share folder." -ForegroundColor Gray
+Write-Host "-----------------------------------------------------------------------------------------------------" -ForegroundColor Yellow
+Write-Host "3. VERIFY HTTP ACCESS (ON DOMAIN-JOINED MACHINE):" -ForegroundColor Cyan
+Write-Host "   Action: Run the following commands on the domain-joined machine to verify:" -ForegroundColor Gray
+Write-Host "   ---------------------------------------------------------------------------" -ForegroundColor Gray
+Write-Host "   `$PkiHttpBase = `"http://${PkiHttpHost}/pkidata`"" -ForegroundColor Gray
+Write-Host "   `$RootCAName  = `"${RootCAName}`"" -ForegroundColor Gray
+Write-Host "   Invoke-WebRequest -Uri `"`$PkiHttpBase/`$RootCAName.crt`" -UseBasicParsing" -ForegroundColor Gray
+Write-Host "   Invoke-WebRequest -Uri `"`$PkiHttpBase/`$RootCAName.crl`" -UseBasicParsing" -ForegroundColor Gray
+Write-Host "   Expected Result: Both commands should return StatusCode 200." -ForegroundColor Gray
+Write-Host "-----------------------------------------------------------------------------------------------------" -ForegroundColor Yellow
+Write-Host "4. PUBLISH TO ACTIVE DIRECTORY (ON DOMAIN-JOINED MACHINE):" -ForegroundColor Cyan
+Write-Host "   Action: Run the following commands on the domain-joined machine:" -ForegroundColor Gray
+Write-Host "   ---------------------------------------------------------------------------" -ForegroundColor Gray
+Write-Host "   `$DfsPkiPath = `"\\\\${DomainFqdn}\share\PKIData`"" -ForegroundColor Gray
+Write-Host "   `$RootCAName = `"${RootCAName}`"" -ForegroundColor Gray
+Write-Host "   certutil -dspublish -f `"`$DfsPkiPath\`$RootCAName.crt`" RootCA" -ForegroundColor Gray
+Write-Host "   certutil -addstore -f root `"`$DfsPkiPath\`$RootCAName.crt`"" -ForegroundColor Gray
+Write-Host "   Action: Optionally, run `gpupdate /force` on other domain members." -ForegroundColor Gray
+Write-Host "=====================================================================================================" -ForegroundColor Red
+Write-Host "DO NOT PROCEED WITH SUBCA INSTALLATION UNTIL THESE STEPS ARE COMPLETE!" -ForegroundColor Red
+Write-Host "=====================================================================================================" -ForegroundColor Red
+
+# Open folder for easy access to files needing manual copy
+explorer.exe $CertEnrollDir
+```
+
+### 5.2 Root CA Initial Install Output
+
+<img title="a title" alt="Alt text" src="PKILab-5-RootCA-Output1.jpg">    
+
+<img title="a title" alt="Alt text" src="PKILab-5-RootCA-Output2.jpg">    
