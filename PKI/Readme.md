@@ -711,3 +711,317 @@ explorer.exe $CertEnrollDir
 <img title="a title" alt="Alt text" src="PKILab-5-RootCA-Output1.jpg">    
 
 <img title="a title" alt="Alt text" src="PKILab-5-RootCA-Output2.jpg">    
+
+### 5.2 Root CA - pki.lab.local/pkidata Validation
+
+```powershell
+$PkiHttpBase = "http://pki.lab.local/pkidata"
+   $RootCAName  = "Lab Root CA"
+   Invoke-WebRequest -Uri "$PkiHttpBase/$RootCAName.crt" -UseBasicParsing
+   Invoke-WebRequest -Uri "$PkiHttpBase/$RootCAName.crl" -UseBasicParsing
+```
+<img title="a title" alt="Alt text" src="PKILab-5-RootCA-PKIUrlValidation-Output1.jpg">
+
+### 5.3 Root CA - DSPublish
+
+```powershell
+$DfsPkiPath = "\\lab.local\share\PKIData"
+   $RootCAName = "Lab Root CA"
+   certutil -dspublish -f "$DfsPkiPath\$RootCAName.crt" RootCA
+   certutil -addstore -f root "$DfsPkiPath\$RootCAName.crt"
+   Write-host "Action: Run gpupdate /force on servers in the PKI solution.
+   This will ensure that the clients pick up the newly published root certificate.
+   Installtion steps will fail for other servers if it doesnt have the root or Sub CAs availbe" -ForegroundColor Green
+```
+
+<img title="a title" alt="Alt text" src="PKILab-5-RootCA-DSPublish-Output2.jpg">
+
+### 5.4 Root CA - Local Certificate Store
+
+```text
+To prove that the Root CA certificate has been published correctly, on the server that the DSPublish commans was run from, open the Certificate MMC, Certificates (Local Computer)/Trusted Root Certification Authorities/Certificates
+"Lab Root CA" should be visable.
+```
+<img title="a title" alt="Alt text" src="PKILab-5-RootCA-Certificates-Output1.jpg">
+
+
+## SubCAs
+### SubCA1 Installation
+
+```powershell
+## 6 - Install SubCA1 (Lab Issuing CA 1)
+### 6.1 SubCA1.lab.local - Part 1
+### RUN THIS ENTIRE SCRIPT ON SUBCA1 SERVER (elevated PowerShell)
+### This script configures SubCA1 and generates the certificate request.
+### Manual steps are required afterward to process the request on Root CA.
+
+### 1 - Common PKI Settings
+$PkiHttpHost    = "pki.lab.local"
+$PkiHttpBase    = "http://$PkiHttpHost/pkidata"
+$OcspHttpBase   = "http://ocsp.lab.local/ocsp"
+$DfsPkiPath     = "\\lab.local\share\PKIData"
+$CertEnrollDir  = "C:\Windows\System32\CertSrv\CertEnroll"
+$LocalPkiFolder = "C:\PKIData"
+
+# This CA's name
+$SubCAName = "Lab Issuing CA 1"
+
+Write-Host "Creating local PKI folder..." -ForegroundColor Cyan
+New-Item -Path $LocalPkiFolder -ItemType Directory -Force | Out-Null
+
+### 2 - Create CAPolicy.inf
+Write-Host "Creating CAPolicy.inf..." -ForegroundColor Cyan
+$caPolicyContent = @"
+[Version]
+Signature=`$Windows NT`$
+
+[PolicyStatementExtension]
+Policies=InternalPolicy
+
+[InternalPolicy]
+OID=1.2.3.4.1455.67.89.5
+Notice="Legal Policy Statement"
+URL=$PkiHttpBase/cps.html
+
+[Certsrv_Server]
+RenewalKeyLength=4096  
+RenewalValidityPeriod=Years
+RenewalValidityPeriodUnits=5
+LoadDefaultTemplates=0
+AlternateSignatureAlgorithm=0
+"@
+
+Set-Content -Path C:\Windows\CAPolicy.inf -Value $caPolicyContent -Force
+Write-Host "CAPolicy.inf created successfully." -ForegroundColor Green
+
+### 3 - Install AD CS Role & Generate Request
+Write-Host "Installing ADCS-Cert-Authority feature..." -ForegroundColor Cyan
+Install-WindowsFeature ADCS-Cert-Authority -IncludeManagementTools
+
+Write-Host "Configuring Enterprise Subordinate CA and generating request..." -ForegroundColor Cyan
+$vCaIssProperties = @{
+  CACommonName              = $SubCAName
+  CADistinguishedNameSuffix = 'O=Lab,L=Fort Lauderdale,S=Florida,C=US'
+  CAType                    = 'EnterpriseSubordinateCA'
+  CryptoProviderName        = 'RSA#Microsoft Software Key Storage Provider'
+  HashAlgorithmName         = 'SHA256'
+  KeyLength                 = 4096
+  DatabaseDirectory         = 'C:\Windows\System32\CertLog'
+  LogDirectory              = 'C:\Windows\System32\CertLog'
+  OutputCertRequestFile     = "$LocalPkiFolder\subca1_request.req"
+}
+Install-AdcsCertificationAuthority @vCaIssProperties -Force
+Write-Host "SubCA1 role installed and request generated." -ForegroundColor Green
+
+### 4 - Manual Steps for Offline Root CA Processing
+Write-Host "`n`n=====================================================================================================" -ForegroundColor Red
+Write-Host "                             *** MANUAL STEPS REQUIRED ***" -ForegroundColor Red
+Write-Host "=====================================================================================================" -ForegroundColor Red
+Write-Host "SubCA1 certificate request has been generated. The following manual steps are CRITICAL:" -ForegroundColor Yellow
+Write-Host "-----------------------------------------------------------------------------------------------------" -ForegroundColor Yellow
+Write-Host "1. MANUALLY COPY REQUEST FILE FROM SUBCA1:" -ForegroundColor Cyan
+Write-Host "   Location: C:\PKIData\subca1_request.req" -ForegroundColor Gray
+Write-Host "   Action: Copy this file to a removable media (e.g., USB drive)." -ForegroundColor Gray
+Write-Host "-----------------------------------------------------------------------------------------------------" -ForegroundColor Yellow
+Write-Host "2. PROCESS REQUEST ON OFFLINE ROOT CA:" -ForegroundColor Cyan
+Write-Host "   Action: Take the media to the Offline Root CA server." -ForegroundColor Gray
+Write-Host "   Location on Root CA: C:\PKIData\" -ForegroundColor Gray
+Write-Host "   Action: Place the subca1_request.req file in the above folder." -ForegroundColor Gray
+Write-Host "   Commands to run on Root CA:" -ForegroundColor Gray
+Write-Host "   ---------------------------------------------------------------------------" -ForegroundColor Gray
+Write-Host "   certreq -submit C:\PKIData\subca1_request.req C:\PKIData\subca1_issued.cer" -ForegroundColor Gray
+Write-Host "   # If it goes pending:" -ForegroundColor Gray
+Write-Host "   certutil -resubmit <REQUEST_ID>" -ForegroundColor Gray
+Write-Host "   certreq -retrieve <REQUEST_ID> C:\PKIData\subca1_issued.cer" -ForegroundColor Gray
+Write-Host "-----------------------------------------------------------------------------------------------------" -ForegroundColor Yellow
+Write-Host "3. MANUALLY COPY ISSUED CERTIFICATE BACK TO SUBCA1:" -ForegroundColor Cyan
+Write-Host "   Action: Copy C:\PKIData\subca1_issued.cer from Root CA to SubCA1 at:" -ForegroundColor Gray
+Write-Host "   Location: C:\PKIData\subca1_issued.cer" -ForegroundColor Gray
+Write-Host "-----------------------------------------------------------------------------------------------------" -ForegroundColor Yellow
+Write-Host "4. COMPLETE SUBCA1 CONFIGURATION:" -ForegroundColor Cyan
+Write-Host "   Action: After copying the issued certificate back, run PART 2 of this script on SubCA1." -ForegroundColor Gray
+Write-Host "   File: Working-v2-6-SubCa1-Install-Part2.ps1" -ForegroundColor Gray
+Write-Host "=====================================================================================================" -ForegroundColor Red
+Write-Host "DO NOT PROCEED WITH PART 2 UNTIL THE ISSUED CERTIFICATE IS COPIED BACK!" -ForegroundColor Red
+Write-Host "=====================================================================================================" -ForegroundColor Red
+
+# Open folder for easy access to request file
+explorer.exe $LocalPkiFolder
+```
+
+<img title="a title" alt="Alt text" src="PKILab-6-SubCA1-Installation-Output1.jpg">
+<img title="a title" alt="Alt text" src="PKILab-6-SubCA1-Installation-Output2.jpg">
+<img title="a title" alt="Alt text" src="PKILab-6-SubCA1-Installation-Output3.jpg">
+
+
+
+### 6.2 Install SubCA1 (Lab Issuing CA 1) - PART 2
+
+```powershell
+### RUN THIS ENTIRE SCRIPT ON SUBCA1 SERVER (elevated PowerShell)
+### This script completes the SubCA1 configuration after the certificate has been issued by the Root CA.
+
+### 1 - Common PKI Settings
+$PkiHttpHost    = "pki.lab.local"
+$PkiHttpBase    = "http://$PkiHttpHost/pkidata"
+$OcspHttpBase   = "http://ocsp.lab.local/ocsp"
+$DfsPkiPath     = "\\lab.local\share\PKIData"
+$CertEnrollDir  = "C:\Windows\System32\CertSrv\CertEnroll"
+$LocalPkiFolder = "C:\PKIData"
+
+# This CA's name
+$SubCAName = "Lab Issuing CA 1"
+
+### 2 - Install Issued Cert and Start CA
+Write-Host "Installing the issued SubCA certificate..." -ForegroundColor Cyan
+certutil -installcert "$LocalPkiFolder\subca1_issued.cer"
+Write-Host "Issued certificate installed." -ForegroundColor Green
+
+Write-Host "Starting CA service..." -ForegroundColor Cyan
+Start-Service certsvc
+Write-Host "CA service started." -ForegroundColor Green
+
+Write-Host "Performing basic health check..." -ForegroundColor Cyan
+Get-Service certsvc
+certutil -ping
+Write-Host "Basic health check complete." -ForegroundColor Green
+
+### 3 - Configure Validity, CDP, and AIA
+Write-Host "Configuring Validity, CDP, and AIA settings..." -ForegroundColor Cyan
+Import-Module ADCSAdministration
+
+# ---- Validity & CRL settings ----
+Write-Host "  Setting validity and CRL periods..." -ForegroundColor Gray
+certutil -setreg CA\ValidityPeriodUnits 1
+certutil -setreg CA\ValidityPeriod "Years"
+certutil -setreg CA\CRLPeriodUnits 1
+certutil -setreg CA\CRLPeriod "Weeks"
+certutil -setreg CA\CRLDeltaPeriodUnits 1
+certutil -setreg CA\CRLDeltaPeriod "Days"
+certutil -setreg CA\CRLOverlapPeriodUnits 3
+certutil -setreg CA\CRLOverlapPeriod "Days"
+certutil -setreg CA\AuditFilter 127
+
+# ---- CDP (CRL Distribution Points) ----
+Write-Host "  Setting CDP locations..." -ForegroundColor Gray
+$crllist = Get-CACrlDistributionPoint
+foreach ($crl in $crllist) { Remove-CACrlDistributionPoint $crl.Uri -Force }
+
+Add-CACRLDistributionPoint `
+    -Uri "$CertEnrollDir\%3%8%9.crl" `
+    -PublishToServer `
+    -PublishDeltaToServer `
+    -Force
+
+Add-CACRLDistributionPoint `
+    -Uri "$DfsPkiPath\%3%8%9.crl" `
+    -PublishToServer `
+    -PublishDeltaToServer `
+    -Force
+
+Add-CACRLDistributionPoint `
+    -Uri "$PkiHttpBase/%3%8%9.crl" `
+    -AddToCertificateCDP `
+    -AddToFreshestCrl `
+    -Force
+
+# ---- AIA (Authority Information Access) ----
+Write-Host "  Setting AIA locations..." -ForegroundColor Gray
+Get-CAAuthorityInformationAccess |
+  Where-Object { $_.Uri -like '*ldap*' -or $_.Uri -like '*http*' -or $_.Uri -like '*file*' -or $_.Uri -like '\\*' } |
+  Remove-CAAuthorityInformationAccess -Force
+
+certutil -setreg CA\CACertPublicationURLs "1:$CertEnrollDir\%3%4.crt`n2:$DfsPkiPath\%3%4.crt"
+
+Add-CAAuthorityInformationAccess `
+    -Uri "$PkiHttpBase/%3%4.crt" `
+    -AddToCertificateAia `
+    -Force
+
+Add-CAAuthorityInformationAccess `
+    -Uri "$OcspHttpBase" `
+    -AddToCertificateOcsp `
+    -Force    
+
+Restart-Service certsvc
+Start-Sleep -Seconds 2
+Write-Host "Validity, CDP, and AIA settings configured and service restarted." -ForegroundColor Green
+
+### 4 - Publish Cert to AD and Copy to DFS
+Write-Host "Publishing initial CRL..." -ForegroundColor Cyan
+certutil -CRL
+Write-Host "Initial CRL published." -ForegroundColor Green
+
+Write-Host "Renaming SubCA certificate to a clean name..." -ForegroundColor Cyan
+$cer = Get-ChildItem $CertEnrollDir -Filter "*.crt" | Select-Object -First 1
+if ($cer -and $cer.Name -ne "$SubCAName.crt") {
+    Rename-Item $cer.FullName "$CertEnrollDir\$SubCAName.crt" -Force
+}
+Write-Host "SubCA certificate renamed." -ForegroundColor Green
+
+Write-Host "Publishing SubCA certificate to Active Directory (NTAuth and SubCA containers)..." -ForegroundColor Cyan
+certutil -dspublish -f "$CertEnrollDir\$SubCAName.crt" NTAuthCA
+certutil -dspublish -f "$CertEnrollDir\$SubCAName.crt" SubCA
+Write-Host "SubCA certificate published to AD." -ForegroundColor Green
+
+Write-Host "Copying SubCA certificate to DFS for HTTP AIA..." -ForegroundColor Cyan
+Copy-Item "$CertEnrollDir\$SubCAName.crt" "$DfsPkiPath\$SubCAName.crt" -Force
+Write-Host "SubCA certificate copied to DFS." -ForegroundColor Green
+
+### 5 - Validation Checks (Run on SubCA1)
+Write-Host "`n=== PKI Configuration Validation ===" -ForegroundColor Cyan
+
+$expectedCDP_HTTP = $PkiHttpBase
+$expectedAIA_HTTP = $PkiHttpBase
+$expectedOCSP = $OcspHttpBase
+
+$caName = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration').Active
+Write-Host "`nCA Name: $caName" -ForegroundColor Yellow
+
+Write-Host "`n--- CRL Distribution Points ---" -ForegroundColor Yellow
+$crlOutput = certutil -getreg CA\CRLPublicationURLs
+$crlOutput | Where-Object { $_ -match '^\s+\d+:\s+\d+:' } | ForEach-Object {
+  if ($_ -match '^\s+\d+:\s+(\d+):(.+)$' ) {
+    $flags = [int]$matches[1]
+    $url = $matches[2].Trim()
+    $addToCertCDP = ($flags -band 0x02) -ne 0
+
+    if ($url -match [regex]::Escape($expectedCDP_HTTP) -and $addToCertCDP) {
+    Write-Host "CDP OK ✅ $url" -ForegroundColor Green
+    } elseif ($url -match 'ldap://|file://' -and $addToCertCDP) {
+    Write-Host "Legacy CDP embedded ❌ $url" -ForegroundColor Red
+    }
+  }
+}
+
+Write-Host "`n--- Authority Information Access ---" -ForegroundColor Yellow
+$aiaOutput = certutil -getreg CA\CACertPublicationURLs
+$aiaOutput | Where-Object { $_ -match '^\s+\d+:\s+\d+:' } | ForEach-Object {
+  if ($_ -match '^\s+\d+:\s+(\d+):(.+)$' ) {
+    $flags = [int]$matches[1]
+    $url = $matches[2].Trim()
+    $addToAIA = ($flags -band 0x02) -ne 0
+    $addToOCSP = ($flags -band 0x20) -ne 0
+
+    if ($url -match [regex]::Escape($expectedAIA_HTTP) -and $addToAIA) {
+    Write-Host "AIA OK ✅ $url" -ForegroundColor Green
+    } elseif ($url -match [regex]::Escape($expectedOCSP) -and $addToOCSP) {
+    Write-Host "OCSP OK ✅ $url" -ForegroundColor Green
+    } elseif ($url -match 'ocsp' -and $addToOCSP -and $url -notmatch [regex]::Escape($expectedOCSP)) {
+    Write-Host "OCSP Wrong Domain ⚠️ $url (should be $expectedOCSP)" -ForegroundColor Yellow
+    } elseif ($url -match 'ldap://|file://' -and ($addToAIA -or $addToOCSP)) {
+    Write-Host "Legacy AIA/OCSP embedded ❌ $url" -ForegroundColor Red
+    }
+  }
+}
+
+Write-Host "`n=== Validation Complete ===" -ForegroundColor Cyan
+
+Write-Host "`n`n=====================================================================================================" -ForegroundColor Green
+Write-Host "SubCA1 (Lab Issuing CA 1) configuration is complete!" -ForegroundColor Green
+Write-Host "=====================================================================================================" -ForegroundColor Green
+```
+
+<img title="a title" alt="Alt text" src="PKILab-6-SubCA1-Installation-Part2-Output1.jpg">
+
+<img title="a title" alt="Alt text" src="PKILab-6-SubCA1-Installation-Part2-Output2.jpg">
